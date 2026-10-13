@@ -14,7 +14,14 @@ build/boot.bin: boot.s boot.cfg
 	$(CA65) -o build/boot.o boot.s
 	$(LD65) -C boot.cfg -o $@ build/boot.o
 
+# release/ASH.ATR (bootable, SD, with ASH.XEX + README.TXT) and release/ASH.XEX
+release: all
+	cp build/ash.xex release/ASH.XEX
+	python3 tools/mkatr.py -o release/ASH.ATR --shell build/ash.xex --boot build/boot.bin \
+	    release/ASH.XEX release/README.TXT
+	python3 tools/mkatr.py --fsck release/ASH.ATR
+
 clean:
 	rm -rf build
 
-.PHONY: all clean
+.PHONY: all clean release

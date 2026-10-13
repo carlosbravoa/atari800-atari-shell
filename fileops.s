@@ -163,12 +163,16 @@ cmd_format:
 :       lda #1
         jsr getarg
         jsr resolve
-        bcs @e
-        lda t_drive
-        beq @ro
-        lda r_kind
+        bcc :+
+        jmp @e
+:       lda t_drive
+        bne :+
+        jmp @ro
+:       lda r_kind
         ora t_depth
-        bne @u
+        beq :+
+        jmp @u
+:
         jsr iprint
         .byte "erase everything on d",0
         lda t_drive
@@ -183,14 +187,39 @@ cmd_format:
         jsr crlf
         pla
         cmp #'y'
-        bne @r
+        beq :+
+        rts
+:
         lda #0
         sta comp
         jsr mkfn
         lda #254
         jsr c_xio
-        bpl @r
-        jmp perr_cio
+        bmi @cerr
+        ldx #127                ; boot sector: a stub that just returns, so
+        lda #0                  ; the disk boots to BASIC like a blank DOS disk
+:       sta sbuf,x
+        dex
+        bpl :-
+        ldx #7
+:       lda bootstub,x
+        sta sbuf,x
+        dex
+        bpl :-
+        lda t_drive
+        sta s_drv
+        lda #1
+        sta s_sec
+        lda #0
+        sta s_sec+1
+        lda #<sbuf
+        ldy #>sbuf
+        jsr wr_any
+        bcc @r
+        lda #E_IO
+        sta err
+        jmp perr
+@cerr:  jmp perr_cio
 @ro:    lda #E_ROFS
         sta err
 @e:     jmp perr
@@ -545,6 +574,8 @@ hw_close:
         jsr SIOV
         clc
 :       rts
+
+bootstub: .byte 0, 1, $00, $07, $06, $07, $18, $60   ; 1 sector @ $0700: clc, rts
 
 usage:  lda #E_USAGE
         sta err

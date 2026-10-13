@@ -17,6 +17,15 @@ d1:/$ neondrop
 loading neondrop.xex
 ```
 
+<p align="center">
+<img src="docs/ash-1.jpg" width="700" alt="ASH on the Tang Nano 20K Atari: df, cp from the HDD and from h:, mkdir, ls -l of a MyDOS subdirectory, cat"><br>
+<em>Copying files between the hard drive (d4:), the SD card folder (h:) and a floppy, into a new directory.</em>
+</p>
+<p align="center">
+<img src="docs/ash-2.jpg" width="700" alt="ASH: copying a game from h: to d1:, file showing its segments, mv, lock/unlock, rm with wildcards, rmdir"><br>
+<em>A game copied onto the disk and inspected with <code>file</code>; rename, lock, wildcard delete and rmdir.</em>
+</p>
+
 ## Commands
 
 | | |

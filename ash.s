@@ -54,7 +54,7 @@ ICBLL   = $0348
 ICBLH   = $0349
 ICAX1   = $034A
 ICAX2   = $034B
-BASICLO = $6000                 ; MEMLO for the `basic` command (above us)
+BASICLO = $6600                 ; MEMLO for the `basic` command (above us)
 
 EOL     = $9B
 MAXLEN  = 76                    ; input line (just under two screen rows)
@@ -80,6 +80,14 @@ dp:     .res 2                  ; current directory entry
 spt:    .res 2                  ; string printer
 mptr:   .res 2                  ; memory source for peek
 num:    .res 3                  ; number in/out (24-bit)
+scr:    .res 2                  ; editor: screen row
+tp:     .res 2                  ; editor: text pointer
+cnt:    .res 2
+cur:    .res 2                  ; editor: cursor, window top, text end
+top:    .res 2
+eend:   .res 2
+cls:    .res 2
+emsg:   .res 2
 
 ; ---- buffers -----------------------------------------------------------------
         .bss
@@ -99,6 +107,15 @@ hwbuf:  .res 128                ; h: write frame
 dcw:    .res 2+16+128           ; cp: destination directory (CWSIZE)
 hwlen:  .res 1
 xcmd:   .res 1
+wdev:   .res 1
+wquiet: .res 1
+ename:  .res 16                 ; editor state
+emod:   .res 1
+eunix:  .res 1
+xoff:   .res 1
+eask:   .res 1
+erow:   .res 1
+ecol:   .res 1
 ; working directory: drive (0 = H:, 1-4 = Dn:), depth, dir sector per level,
 ; name per level (16 bytes each, level 0 unused). `tcw` is the resolver's copy.
 CWSIZE  = 2 + 16 + 128
@@ -2194,6 +2211,10 @@ cmd_file:
         and fb0
         cmp #$FF
         beq cf_xex
+        pla
+        ora fb0
+        beq cf_bas              ; $0000: tokenized BASIC (SAVE)
+        pha
         lda fb0
         jsr txtchk
         pla
@@ -2202,6 +2223,11 @@ cf_pl:    jsr fgetb
         bcs cf_pend
         jsr txtchk
         jmp cf_pl
+cf_bas:   jsr iprint
+        .byte "atari basic program (tokenized), ",0
+:       jsr fgetb
+        bcc :-
+        jmp cf_sz
 cf_one:   lda fb0
         jsr txtchk
 cf_pend:  lda ftext
@@ -2584,6 +2610,7 @@ cmd_reboot:
         jmp COLDSV
 
         .include "fileops.s"
+        .include "editor.s"
 
 h_xio:  sta DAUX1               ; XIO A on namebuf
         lda #$58
@@ -2706,9 +2733,9 @@ cmdnames:
         .byte "clear",0,"cls",0,"help",0,"theme",0,"peek",0,"poke",0
         .byte "echo",0,"history",0,"reboot",0,"basic",0,"ver",0,"uname",0
         .byte "rm",0,"mv",0,"cp",0,"mkdir",0,"rmdir",0,"lock",0,"unlock",0
-        .byte "format",0
+        .byte "format",0,"edit",0
         .byte 0
-.define CMDS cmd_ls,cmd_ls,cmd_cd,cmd_pwd,cmd_cat,cmd_cat,cmd_cat,cmd_xxd,cmd_xxd,cmd_file,cmd_run,cmd_df,cmd_df,cmd_clear,cmd_clear,cmd_help,cmd_theme,cmd_peek,cmd_poke,cmd_echo,cmd_history,cmd_reboot,cmd_basic,cmd_ver,cmd_ver,cmd_rm,cmd_mv,cmd_cp,cmd_mkdir,cmd_rm,cmd_lock,cmd_unlock,cmd_format
+.define CMDS cmd_ls,cmd_ls,cmd_cd,cmd_pwd,cmd_cat,cmd_cat,cmd_cat,cmd_xxd,cmd_xxd,cmd_file,cmd_run,cmd_df,cmd_df,cmd_clear,cmd_clear,cmd_help,cmd_theme,cmd_peek,cmd_poke,cmd_echo,cmd_history,cmd_reboot,cmd_basic,cmd_ver,cmd_ver,cmd_rm,cmd_mv,cmd_cp,cmd_mkdir,cmd_rm,cmd_lock,cmd_unlock,cmd_format,cmd_edit
 cmdlo:  .lobytes CMDS
 cmdhi:  .hibytes CMDS
 
@@ -2758,6 +2785,7 @@ s_help:
         .byte "mkdir rmdir      directories (MyDOS)",EOL
         .byte "lock unlock      protect files",EOL
         .byte "format dn:       erase a disk (DOS 2)",EOL
+        .byte "edit file        full-screen text editor",EOL
         .byte "history  clear  echo  basic  reboot",EOL
         .byte EOL
         .byte "tab completes names, arrows recall",EOL

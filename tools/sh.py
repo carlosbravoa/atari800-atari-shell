@@ -15,7 +15,7 @@ from atari_link import AtariLink  # noqa: E402
 
 # HID usage codes for keys that aren't plain ASCII (mod bit0 = Ctrl)
 SPECIAL = {"TAB": (0x2B, 0), "UP": (0x2F, 1), "DOWN": (0x30, 1), "CLR": (0x2D, 1),
-           "RET": (0x28, 0), "BS": (0x2A, 0), "BRK": (0x48, 0), "ESC": (0x29, 0)}
+           "RET": (0x28, 0), "BS": (0x2A, 0), "CS": (0x16, 1), "CQ": (0x14, 1), "BRK": (0x48, 0), "ESC": (0x29, 0)}
 
 
 def keys(l, text):

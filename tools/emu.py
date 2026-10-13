@@ -72,6 +72,7 @@ class Machine:
         self.iocb = {}                   # IOCB index -> 'E', 'K' or handler table address
         for a in (CIOV, SIOV, COLDSV):
             self.m[a] = 0x60
+        self.m[0x58:0x5A] = (0xBC40).to_bytes(2, "little")   # SAVMSC: GR.0 screen
 
     def w16(self, a):
         return self.m[a] | (self.m[a + 1] << 8)
@@ -371,9 +372,11 @@ def main():
     ap.add_argument("--boot", action="store_true", help="boot D1: through its boot sector")
     ap.add_argument("--expect", help="xex whose segments must be in RAM at the run address")
     ap.add_argument("--save", action="store_true", help="write modified disks back")
+    ap.add_argument("--esc", action="store_true", help=r"decode \xNN escapes in cmds (key codes)")
     ap.add_argument("cmds", nargs="*")
     a = ap.parse_args()
-    keys = b"".join(c.encode("latin1").replace(b"\t", b"\x7f") + b"\x9b" for c in a.cmds)
+    cmds = [c.encode("latin1").decode("unicode_escape") for c in a.cmds] if a.esc else a.cmds
+    keys = b"".join(c.encode("latin1").replace(b"\t", b"\x7f") + b"\x9b" for c in cmds)
     mc, entry = build(a, keys)
     if a.expect:
         segs = mc.load_xex(a.expect)

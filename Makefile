@@ -3,7 +3,7 @@ LD65   := $(HOME)/.local/bin/ld65
 
 all: build/ash.xex build/boot.bin
 
-build/ash.xex: ash.s ash.cfg
+build/ash.xex: ash.s kernel.s fileops.s editor.s ash.cfg
 	@mkdir -p build
 	$(CA65) -g -l build/ash.lst -o build/ash.o ash.s
 	$(LD65) -C ash.cfg -Ln build/ash.lbl -m build/ash.map -o $@ build/ash.o

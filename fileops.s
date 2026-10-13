@@ -224,13 +224,15 @@ cp_core:
         jsr descend             ; an existing directory: copy into it
         bcc cpc_dir
 cp_e1:  jmp cp_err
-cpc_new:   ldx #0
+cpc_new:
+        ldx #0
 :       lda comp,x
         sta cbuf,x
         beq cpc_dir
         inx
         bne :-
-cpc_dir:   ldx #CWSIZE             ; remember the destination directory
+cpc_dir:
+        ldx #CWSIZE             ; remember the destination directory
 :       lda tcw-1,x
         sta dcw-1,x
         dex
@@ -242,11 +244,11 @@ cpc_dir:   ldx #CWSIZE             ; remember the destination directory
         lda cbuf
         bne :+
         ldx #0                  ; same name as the source
-cpc_cn:    lda nbuf,x
+@cn:    lda nbuf,x
         sta cbuf,x
         beq :+
         inx
-        bne cpc_cn
+        bne @cn
 :       ldx #CWSIZE
 :       lda dcw-1,x
         sta tcw-1,x
@@ -259,35 +261,16 @@ cpc_cn:    lda nbuf,x
         inx
         bne :-
 :       lda #0
-        sta hwlen
         sta fsz
         sta fsz+1
         sta fsz+2
-        lda t_drive
-        bne cp_dopen
-        jsr h_name0             ; h: destination on firmware handle 0
-        ldx #0
-:       lda comp,x
-        sta namebuf,x
-        beq :+
-        inx
-        bne :-
-:       lda #8
-        jsr hw_open
+        sta wquiet
+        jsr w_open
         bcc cp_loop
         jsr stream_end
-        lda #E_IO
-        sta err
-cp_err: jsr perr
         sec
         rts
-cp_dopen:
-        jsr mkfn
-        lda #8
-        jsr c_open
-        bpl cp_loop
-        jsr perr_cio
-        jsr stream_end
+cp_err: jsr perr
         sec
         rts
 
@@ -295,31 +278,13 @@ cp_loop:
         jsr k_getbyte
         bcs cp_done
         jsr fgetc
-        ldx t_drive
-        bne @dput
-        jsr hw_put
+        jsr w_put
         bcc cp_loop
-        bcs cp_werr
-@dput:  jsr c_put
-        bpl cp_loop
-        jsr perr_cio
-        jmp cp_fin
-cp_werr:
-        lda #E_IO
-        sta err
-        jsr perr
         jmp cp_fin
 cp_done:
-        lda t_drive
-        bne @d
-        jsr hw_close
-        bcs cp_werr
-        jmp @ok
-@d:     jsr c_close
-        bpl @ok
-        jsr perr_cio
-        jmp cp_fin
-@ok:    lda fsz
+        jsr w_close
+        bcs cp_fin
+        lda fsz
         sta num
         lda fsz+1
         sta num+1
@@ -331,10 +296,63 @@ cp_done:
         jsr stream_end
         clc
         rts
-cp_fin: jsr c_close
+cp_fin: jsr w_close
         jsr stream_end
         sec
         rts
+
+; ---- writing a file: comp in directory tcw, disk or h: ------------------------
+; w_open / w_put (A) / w_close -> C=1 on error; reported unless wquiet.
+w_open: lda #0
+        sta hwlen
+        lda t_drive
+        sta wdev
+        bne wo_d
+        jsr h_name0             ; h: on firmware handle 0
+        ldx #0
+:       lda comp,x
+        sta namebuf,x
+        beq :+
+        inx
+        bne :-
+:       lda #8
+        jsr hw_open
+        bcc w_ok
+w_hio:  lda #E_IO
+        sta err
+        lda wquiet
+        bne w_bad
+        jsr perr
+w_bad:  sec
+        rts
+wo_d:   jsr mkfn
+        lda #8
+        jsr c_open
+w_cio:  bpl w_ok
+        lda wquiet
+        bne w_bad
+        jsr perr_cio
+        sec
+        rts
+w_ok:   clc
+        rts
+
+w_put:  ldx wdev
+        bne @d
+        jsr hw_put
+        bcc w_ok
+        bcs w_hio
+@d:     jsr c_put
+        jmp w_cio
+
+w_close:
+        ldx wdev
+        bne @d
+        jsr hw_close
+        bcc w_ok
+        bcs w_hio
+@d:     jsr c_close
+        jmp w_cio
 
 fgetc:  inc fsz                 ; byte counter for cp
         bne :+

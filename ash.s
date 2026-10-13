@@ -2779,13 +2779,13 @@ s_help:
         .byte "df               drives and free space",EOL
         .byte "peek adr [len]   dump memory (hex)",EOL
         .byte "poke adr byte..  write memory (hex)",EOL
-        .byte "theme name       blue green amber classic",EOL
+        .byte "theme name       colours (theme = list)",EOL
         .byte "cp src dst       copy (disks and h:)",EOL
         .byte "rm mv            delete, rename / move",EOL
         .byte "mkdir rmdir      directories (MyDOS)",EOL
         .byte "lock unlock      protect files",EOL
         .byte "format dn:       erase a disk (DOS 2)",EOL
-        .byte "edit file        full-screen text editor",EOL
+        .byte "edit file        full-screen editor",EOL
         .byte "history  clear  echo  basic  reboot",EOL
         .byte EOL
         .byte "tab completes names, arrows recall",EOL

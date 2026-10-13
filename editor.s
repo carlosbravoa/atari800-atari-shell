@@ -11,7 +11,7 @@
 ;   Shift-Delete or Ctrl-K kill the line, Tab indents, Ctrl-A / Ctrl-E
 ;   go to start / end of line, Ctrl-S saves, Ctrl-Q quits.
 ; ===========================================================================
-ETEXT   = $6600
+ETEXT   = $6700
 EMAX    = $4000
 EROWS   = 23
 SAVMSC  = $58

@@ -54,7 +54,7 @@ ICBLL   = $0348
 ICBLH   = $0349
 ICAX1   = $034A
 ICAX2   = $034B
-BASICLO = $6600                 ; MEMLO for the `basic` command (above us)
+BASICLO = $6700                 ; MEMLO for the `basic` command (above us)
 
 EOL     = $9B
 MAXLEN  = 76                    ; input line (just under two screen rows)
@@ -2629,6 +2629,15 @@ cmd_history:
 cmd_reboot:
         jmp COLDSV
 
+cmd_about:                      ; (not listed in help)
+        jsr iprint
+        .byte "(c) 2026 Carlos Bravo",EOL,"Made with ",0
+        lda #0                  ; ATASCII heart
+        jsr outc
+        jsr iprint
+        .byte " from Chile",EOL,0
+        rts
+
         .include "fileops.s"
         .include "editor.s"
 
@@ -2753,9 +2762,9 @@ cmdnames:
         .byte "clear",0,"cls",0,"help",0,"theme",0,"peek",0,"poke",0
         .byte "echo",0,"history",0,"reboot",0,"basic",0,"ver",0,"uname",0
         .byte "rm",0,"mv",0,"cp",0,"mkdir",0,"rmdir",0,"lock",0,"unlock",0
-        .byte "format",0,"edit",0
+        .byte "format",0,"edit",0,"about",0
         .byte 0
-.define CMDS cmd_ls,cmd_ls,cmd_cd,cmd_pwd,cmd_cat,cmd_cat,cmd_cat,cmd_xxd,cmd_xxd,cmd_file,cmd_run,cmd_df,cmd_df,cmd_clear,cmd_clear,cmd_help,cmd_theme,cmd_peek,cmd_poke,cmd_echo,cmd_history,cmd_reboot,cmd_basic,cmd_ver,cmd_ver,cmd_rm,cmd_mv,cmd_cp,cmd_mkdir,cmd_rm,cmd_lock,cmd_unlock,cmd_format,cmd_edit
+.define CMDS cmd_ls,cmd_ls,cmd_cd,cmd_pwd,cmd_cat,cmd_cat,cmd_cat,cmd_xxd,cmd_xxd,cmd_file,cmd_run,cmd_df,cmd_df,cmd_clear,cmd_clear,cmd_help,cmd_theme,cmd_peek,cmd_poke,cmd_echo,cmd_history,cmd_reboot,cmd_basic,cmd_ver,cmd_ver,cmd_rm,cmd_mv,cmd_cp,cmd_mkdir,cmd_rm,cmd_lock,cmd_unlock,cmd_format,cmd_edit,cmd_about
 cmdlo:  .lobytes CMDS
 cmdhi:  .hibytes CMDS
 

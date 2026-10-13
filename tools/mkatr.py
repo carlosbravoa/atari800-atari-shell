@@ -164,6 +164,78 @@ def read_file(sec, ss, start, link16=False):
     return bytes(out)
 
 
+def fsck(path):
+    """Check a DOS 2 / MyDOS-small disk: chains, file numbers, counts, VTOC.
+    Returns a list of problems (empty = clean). Sectors marked used that no
+    file owns are allowed only as one run starting at 4 (a boot image)."""
+    ss, sec = read_atr(path)
+    probs, owner = [], {}
+    v = sec(VTOC)
+    if v[0] != 2:
+        return [f"VTOC dos byte {v[0]} (not DOS 2)"]
+
+    def own(n, who):
+        if not 1 <= n <= 720:
+            probs.append(f"{who}: sector {n} out of range")
+        elif n in owner:
+            probs.append(f"{who}: sector {n} also used by {owner[n]}")
+        else:
+            owner[n] = who
+
+    def walk(start, path):
+        for i in range(64):
+            b = sec(start + i // 8)
+            e = b[(i % 8) * 16:(i % 8) * 16 + 16]
+            if e[0] == 0:
+                return
+            if e[0] & 0x80:
+                continue
+            nm = (e[5:13].decode("latin1").rstrip() + "." + e[13:16].decode("latin1").rstrip()).rstrip(".")
+            who = path + nm
+            cnt = int.from_bytes(e[1:3], "little")
+            st = int.from_bytes(e[3:5], "little")
+            if e[0] & 0x10:
+                for k in range(8):
+                    own(st + k, who + "/")
+                walk(st, who + "/")
+                continue
+            if not e[0] & 0x40:
+                continue
+            if e[0] & 0x01:
+                probs.append(f"{who}: still open for write")
+            n, k, seen = st, 0, set()
+            while n:
+                if n in seen or k > 2000:
+                    probs.append(f"{who}: chain loops")
+                    break
+                seen.add(n)
+                own(n, who)
+                d = sec(n)
+                if (d[ss - 3] >> 2) != i and not e[0] & 0x04:
+                    probs.append(f"{who}: sector {n} file number {d[ss - 3] >> 2} != {i}")
+                if d[ss - 1] > ss - 3:
+                    probs.append(f"{who}: sector {n} count {d[ss - 1]}")
+                hi = d[ss - 3] if e[0] & 0x04 else d[ss - 3] & 3
+                n = (hi << 8) | d[ss - 2]
+                k += 1
+            if k != cnt:
+                probs.append(f"{who}: {k} sectors in chain, entry says {cnt}")
+    walk(DIR0, "")
+    nbits = 721 if int.from_bytes(v[1:3], "little") > 707 else 720   # MyDOS uses 720 too
+    used = {n for n in range(nbits) if not v[10 + n // 8] & (0x80 >> (n % 8))}
+    reserved = set(range(0, 4)) | set(range(VTOC, DIR0 + 8))
+    for n in sorted(set(owner) - used):
+        probs.append(f"sector {n} ({owner[n]}) is free in the VTOC")
+    orphan = sorted(used - set(owner) - reserved)
+    run = list(range(4, 4 + len(orphan)))
+    if orphan and orphan != run:
+        probs.append(f"{len(orphan)} used sectors no file owns: {orphan[:12]}")
+    free = int.from_bytes(v[3:5], "little")
+    if free != nbits - len(used):
+        probs.append(f"VTOC free count {free} != bitmap {nbits - len(used)}")
+    return probs
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -173,7 +245,13 @@ def main():
     ap.add_argument("--shell", help="ash.xex: make the disk boot into ASH")
     ap.add_argument("--boot", help="boot.bin (with --shell)")
     ap.add_argument("--list", metavar="ATR")
+    ap.add_argument("--fsck", metavar="ATR")
     a = ap.parse_args()
+
+    if a.fsck:
+        p = fsck(a.fsck)
+        print("\n".join(p) if p else f"{a.fsck}: clean")
+        sys.exit(1 if p else 0)
 
     if a.list:
         ss, sec = read_atr(a.list)

@@ -10,7 +10,8 @@
 ; Memory: see ash.cfg. ZP $80-$BF is ours (BASIC is switched off for good).
 ; ===========================================================================
         .setcpu "6502"
-        .import __KERNEL_LOAD__, __KERNEL_RUN__, __MAIN_START__, __MAIN_LAST__
+        .import __KERNEL_LOAD__, __KERNEL_RUN__, __KERNEL_SIZE__
+        .import __MAIN_START__, __MAIN_LAST__
 
 ; ---- OS -------------------------------------------------------------------
 CIOV    = $E456
@@ -53,13 +54,12 @@ ICBLL   = $0348
 ICBLH   = $0349
 ICAX1   = $034A
 ICAX2   = $034B
-BASICLO = $5000                 ; MEMLO for the `basic` command (above us)
+BASICLO = $6000                 ; MEMLO for the `basic` command (above us)
 
 EOL     = $9B
 MAXLEN  = 76                    ; input line (just under two screen rows)
 MAXARGS = 8
 MAXDIR  = 64
-KBUF    = $0900                 ; kernel sector buffer
 HHANDLE = 1                     ; our H: handle (0 is left to the H: handler)
 
 E_NOENT = 1
@@ -94,6 +94,11 @@ comp:   .res 16                 ; current path component (lowercase)
 nbuf:   .res 16                 ; formatted name "name.ext"
 cbuf:   .res 16                 ; tab-completion candidate
 hbuf:   .res 8
+fnbuf:  .res 96                 ; "Dn:/path/NAME" for CIO
+hwbuf:  .res 128                ; h: write frame
+dcw:    .res 2+16+128           ; cp: destination directory (CWSIZE)
+hwlen:  .res 1
+xcmd:   .res 1
 ; working directory: drive (0 = H:, 1-4 = Dn:), depth, dir sector per level,
 ; name per level (16 bytes each, level 0 unused). `tcw` is the resolver's copy.
 CWSIZE  = 2 + 16 + 128
@@ -107,7 +112,6 @@ t_drive   = tcw
 t_depth   = tcw+1
 t_dirs    = tcw+2
 t_names   = tcw+18
-ss_tab: .res 5                  ; per drive: $80 = 128-byte sectors, $00 = 256
 argc:   .res 1
 len:    .res 1
 hsel:   .res 1
@@ -181,9 +185,9 @@ start:  cld
         sta DOSVEC
         lda #>warm
         sta DOSVEC+1
-        lda #<k_rts
+        lda #<fms_init          ; RESET keeps D: alive
         sta DOSINI
-        lda #>k_rts
+        lda #>fms_init
         sta DOSINI+1
         lda BOOTQ
         ora #1                  ; "booted from disk": RESET comes back warm
@@ -243,14 +247,32 @@ machine_setup:
         sta BASICF
         lda #$C0
         sta RAMTOP
-        ldx #0
-:       lda __KERNEL_LOAD__,x
-        sta __KERNEL_RUN__,x
-        lda __KERNEL_LOAD__+$100,x
-        sta __KERNEL_RUN__+$100,x
-        inx
+        lda #<__KERNEL_LOAD__
+        sta ptr
+        lda #>__KERNEL_LOAD__
+        sta ptr+1
+        lda #<__KERNEL_RUN__
+        sta ap
+        lda #>__KERNEL_RUN__
+        sta ap+1
+        ldx #>(__KERNEL_SIZE__+255)
+        ldy #0
+:       lda (ptr),y
+        sta (ap),y
+        iny
         bne :-
-        rts
+        inc ptr+1
+        inc ap+1
+        dex
+        bne :-
+        lda #<fms_end
+        sta k_memlo
+        lda #>fms_end
+        sta k_memlo+1
+        lda #0
+        sta v_dirty
+        sta v_drv
+        jmp fms_init
 
 screen_setup:
         jsr close_all
@@ -1351,16 +1373,16 @@ disk_dir:
         jsr rdsec
         bcs @r
         ldx #0
-@ent:   lda KBUF,x
+@ent:   lda dbuf,x
         beq @end                ; never-used slot: end of directory
         bmi @skip               ; deleted
-        and #$40
+        and #$50                ; in use, or a MyDOS directory
         beq @skip
         lda ndir
         cmp #MAXDIR
         bcs @end
         ldy #0
-@cp:    lda KBUF,x
+@cp:    lda dbuf,x
         sta (dp),y
         inx
         iny
@@ -1479,48 +1501,12 @@ h_eof:  jsr h_close
 :       rts
 
 ; ---- SIO helpers --------------------------------------------------------------
-; drive X status -> ss_tab[X]. C=1 error.
-dstat:  stx tmp2
-        stx DUNIT
-        lda #$31
-        sta DDEVIC
-        lda #$53
-        sta DCOMND
-        lda #0
-        sta DAUX1
-        sta DAUX2
-        lda #4
-        jsr k_sio
-        bmi ioerr
-        ldx tmp2
-        lda KBUF
-        and #$20                ; double density: 256-byte sectors
-        beq :+
-        lda #$00
-        .byte $2C
-:       lda #$80
-        sta ss_tab,x
-        clc
+dstat:  jsr k_dstat              ; drive X -> density; C=1 error
+        bcs ioerr
         rts
 
-; drive X, sector A/Y -> KBUF. C=1 error.
-rdsec:  sta DAUX1
-        sty DAUX2
-        stx DUNIT
-        lda #$31
-        sta DDEVIC
-        lda #$52
-        sta DCOMND
-        lda ss_tab,x
-        cpy #0
-        bne :+
-        ldy DAUX1
-        cpy #4
-        bcs :+
-        lda #$80                ; boot sectors are always 128 bytes
-:       jsr k_sio
-        bmi ioerr
-        clc
+rdsec:  jsr k_rdsec              ; drive X, sector A/Y -> dbuf
+        bcs ioerr
         rts
 ioerr:  lda #E_IO
         sta err
@@ -1608,8 +1594,6 @@ open_file:
         beq @h
         sta k_dev
         tax
-        lda ss_tab,x
-        sta k_ss
         ldy #3
         lda (dp),y
         sta k_next
@@ -1827,9 +1811,9 @@ cmd_ls: lda #0
         ldy #>360
         jsr rdsec
         bcs @r
-        lda KBUF+3
+        lda dbuf+3
         sta num
-        lda KBUF+4
+        lda dbuf+4
         sta num+1
         lda #0
         sta num+2
@@ -2457,10 +2441,12 @@ launch: jsr close_all
         sta DOSVEC
         lda #>COLDSV
         sta DOSVEC+1
-        lda #<(KBUF+$100)
+        lda #<fms_end           ; programs get MEMLO just above the FMS
         sta MEMLO
-        lda #>(KBUF+$100)
+        sta k_memlo
+        lda #>fms_end
         sta MEMLO+1
+        sta k_memlo+1
         jmp k_exec
 
 stock_colors:
@@ -2495,9 +2481,9 @@ cmd_df: ldx #1
         ldy #>360
         jsr rdsec
         bcs @ce
-        lda KBUF+3
+        lda dbuf+3
         sta num
-        lda KBUF+4
+        lda dbuf+4
         sta num+1
         lda #0
         sta num+2
@@ -2505,9 +2491,9 @@ cmd_df: ldx #1
         jsr pdec
         jsr iprint
         .byte " free of",0
-        lda KBUF+1
+        lda dbuf+1
         sta num
-        lda KBUF+2
+        lda dbuf+2
         sta num+1
         lda #0
         sta num+2
@@ -2597,86 +2583,7 @@ cmd_history:
 cmd_reboot:
         jmp COLDSV
 
-; rm FILE / mv OLD NEW — H: only (XIO 33 / 32 on the SD folder)
-cmd_rm: lda #2
-        jsr h_target
-        bcs @e
-        lda #33
-        jmp h_xio
-@e:     jmp perr
-
-cmd_mv: lda #3
-        jsr h_target
-        bcs @e
-        ldx #0                  ; namebuf = "OLD,NEW"
-:       lda namebuf,x
-        beq :+
-        inx
-        bne :-
-:       lda #','
-        sta namebuf,x
-        inx
-        stx tmp3
-        lda #2
-        jsr getarg
-        ldy #0                  ; NEW: bare name, any h: prefix dropped
-        lda (ap),y
-        jsr tolower
-        cmp #'h'
-        bne @n
-        iny
-        lda (ap),y
-        dey
-        cmp #':'
-        bne @n
-        ldy #2
-@n:     ldx tmp3
-:       lda (ap),y
-        sta namebuf,x
-        beq :+
-        inx
-        iny
-        cpx #63
-        bcc :-
-:       lda #32
-        jmp h_xio
-@e:     jmp perr
-
-; argc must be >= A; argument 1 must name an existing H: file -> namebuf
-h_target:
-        cmp argc
-        beq :+
-        bcc :+
-        lda #E_USAGE
-        bne @err
-:       lda #1
-        jsr getarg
-        jsr resolve
-        bcs @r
-        lda r_kind
-        beq @dir
-        lda t_drive
-        beq :+
-        lda #E_ROFS
-        bne @err
-:       jsr tdir_load
-        bcs @r
-        jsr lookup_comp
-        bcs @r
-        jsr fmt_name
-        jsr h_name0
-        ldx #0
-:       lda nbuf,x
-        sta namebuf,x
-        beq :+
-        inx
-        bne :-
-:       clc
-        rts
-@dir:   lda #E_ISDIR
-@err:   sta err
-        sec
-@r:     rts
+        .include "fileops.s"
 
 h_xio:  sta DAUX1               ; XIO A on namebuf
         lda #$58
@@ -2715,10 +2622,10 @@ cmd_theme:
 :       cmp themekey,x
         beq @set
         inx
-        cpx #4
+        cpx #5
         bne :-
 @u:     jsr iprint
-        .byte "theme green|amber|blue|white",EOL,0
+        .byte "theme blue|green|amber|classic|white",EOL,0
         rts
 @set:   stx theme
 apply_theme:
@@ -2755,8 +2662,10 @@ cmd_basic:
         sta RAMTOP
         lda #<BASICLO
         sta MEMLO
+        sta k_memlo
         lda #>BASICLO
         sta MEMLO+1
+        sta k_memlo+1
         lda #2
         sta LMARGN
         jsr stock_colors
@@ -2776,10 +2685,11 @@ s_slash:.byte "/",0
 s_more: .byte $AD,$AD,$A0,$ED,$EF,$F2,$E5,$A0,$AD,$AD   ; inverse "-- more --"
 exts:   .byte "XEXCOMEXEOBJBIN"
 dotexts:.byte ".xex",0,".com",0,".exe",0
-themekey: .byte "gabw"
-themes: .byte $C0,$0E,$C0       ; green phosphor
+themekey: .byte "bgacw"
+themes: .byte $82,$0E,$82       ; deep blue (default)
+        .byte $C0,$0E,$C0       ; green phosphor
         .byte $20,$0E,$20       ; amber
-        .byte $94,$CA,$00       ; the Atari blue
+        .byte $94,$CA,$00       ; classic Atari blue
         .byte $00,$0C,$00       ; white on black
 stockc: .byte $28,$CA,$94,$46,$00
 
@@ -2795,12 +2705,29 @@ cmdnames:
         .byte "xxd",0,"hexdump",0,"file",0,"run",0,"df",0,"drives",0
         .byte "clear",0,"cls",0,"help",0,"theme",0,"peek",0,"poke",0
         .byte "echo",0,"history",0,"reboot",0,"basic",0,"ver",0,"uname",0
-        .byte "rm",0,"mv",0
+        .byte "rm",0,"mv",0,"cp",0,"mkdir",0,"rmdir",0,"lock",0,"unlock",0
+        .byte "format",0
         .byte 0
-.define CMDS cmd_ls,cmd_ls,cmd_cd,cmd_pwd,cmd_cat,cmd_cat,cmd_cat,cmd_xxd,cmd_xxd,cmd_file,cmd_run,cmd_df,cmd_df,cmd_clear,cmd_clear,cmd_help,cmd_theme,cmd_peek,cmd_poke,cmd_echo,cmd_history,cmd_reboot,cmd_basic,cmd_ver,cmd_ver,cmd_rm,cmd_mv
+.define CMDS cmd_ls,cmd_ls,cmd_cd,cmd_pwd,cmd_cat,cmd_cat,cmd_cat,cmd_xxd,cmd_xxd,cmd_file,cmd_run,cmd_df,cmd_df,cmd_clear,cmd_clear,cmd_help,cmd_theme,cmd_peek,cmd_poke,cmd_echo,cmd_history,cmd_reboot,cmd_basic,cmd_ver,cmd_ver,cmd_rm,cmd_mv,cmd_cp,cmd_mkdir,cmd_rm,cmd_lock,cmd_unlock,cmd_format
 cmdlo:  .lobytes CMDS
 cmdhi:  .hibytes CMDS
 
+ciocodes: .byte 136,138,139,144,146,160,161,162,165,167,169,170,175,0
+ciolo:  .lobytes c_136,c_138,c_139,c_144,c_146,c_160,c_161,c_162,c_165,c_167,c_169,c_170,c_175
+ciohi:  .hibytes c_136,c_138,c_139,c_144,c_146,c_160,c_161,c_162,c_165,c_167,c_169,c_170,c_175
+c_136:  .byte "end of file",0
+c_138:  .byte "drive not responding",0
+c_139:  .byte "drive refused (NAK)",0
+c_144:  .byte "device error (write protected?)",0
+c_146:  .byte "not supported",0
+c_160:  .byte "no such drive",0
+c_161:  .byte "too many open files",0
+c_162:  .byte "disk full",0
+c_165:  .byte "bad file name",0
+c_167:  .byte "locked, or directory not empty",0
+c_169:  .byte "directory full",0
+c_170:  .byte "no such file",0
+c_175:  .byte "not a DOS 2 disk (read-only)",0
 errlo:  .lobytes e_noent,e_notdir,e_io,e_isdir,e_noexec,e_deep,e_usage,e_num,e_rofs
 errhi:  .hibytes e_noent,e_notdir,e_io,e_isdir,e_noexec,e_deep,e_usage,e_num,e_rofs
 e_noent:  .byte "no such file or directory",0
@@ -2811,7 +2738,7 @@ e_noexec: .byte "not an executable",0
 e_deep:   .byte "too many levels",0
 e_usage:  .byte "missing operand",0
 e_num:    .byte "bad number",0
-e_rofs:   .byte "read-only (disks: use DOS)",0
+e_rofs:   .byte "not supported here",0
 
 s_help:
         .byte "ls [-l] [path]   list a directory",EOL
@@ -2825,8 +2752,12 @@ s_help:
         .byte "df               drives and free space",EOL
         .byte "peek adr [len]   dump memory (hex)",EOL
         .byte "poke adr byte..  write memory (hex)",EOL
-        .byte "theme name       green amber blue white",EOL
-        .byte "rm / mv          delete, rename (h: only)",EOL
+        .byte "theme name       blue green amber classic",EOL
+        .byte "cp src dst       copy (disks and h:)",EOL
+        .byte "rm mv            delete, rename / move",EOL
+        .byte "mkdir rmdir      directories (MyDOS)",EOL
+        .byte "lock unlock      protect files",EOL
+        .byte "format dn:       erase a disk (DOS 2)",EOL
         .byte "history  clear  echo  basic  reboot",EOL
         .byte EOL
         .byte "tab completes names, arrows recall",EOL
@@ -2834,201 +2765,7 @@ s_help:
         .byte "break cancels, reset comes back here",EOL
         .byte 0
 
-; ===========================================================================
-; Resident kernel — runs at $0700-$08FF (sector buffer $0900-$09FF), the
-; only code that survives a launch: inside DOS 2.5's own footprint, so any
-; .xex that loads under DOS stays clear of it.
-; k_getbyte streams a file: a DOS 2 / MyDOS sector chain on D1:-D4:
-; (k_dev = 1-4) or an open H: file (k_dev = 0). k_exec loads and runs an
-; Atari executable from the stream. No zero page: the load must not trip
-; over anything the program's INIT segments do.
-; ===========================================================================
-        .segment "KERNEL"
-k_getbyte:                      ; -> C=0 A=byte; C=1 end (k_err bit 7 = error)
-        stx k_sx
-        sty k_sy
-@again: ldx k_pos
-        cpx k_len
-        bcc @have
-        jsr k_refill
-        bcc @again
-        bcs @out
-@have:  lda KBUF,x
-        inx
-        stx k_pos
-        clc
-@out:   ldx k_sx
-        ldy k_sy
-        rts
-
-k_refill:
-        lda #0
-        sta k_pos
-        sta k_len
-        lda k_dev
-        beq @h
-        lda k_next              ; disk: next sector in the chain
-        ora k_next+1
-        beq @end
-        lda #$31
-        sta DDEVIC
-        lda k_dev
-        sta DUNIT
-        lda #$52
-        sta DCOMND
-        lda k_next
-        sta DAUX1
-        lda k_next+1
-        sta DAUX2
-        lda k_ss
-        jsr k_sio
-        bmi @end
-        ldx k_ss
-        dex
-        lda KBUF,x              ; byte count
-        sta k_len
-        dex
-        lda KBUF,x              ; next sector lo
-        sta k_next
-        dex
-        lda KBUF,x              ; file number<<2 | next hi (DOS 2)
-        bit k_l16
-        bmi :+
-        and #$03
-:       sta k_next+1
-        clc
-        rts
-@h:     lda #$53                ; H: how much is left?
-        jsr k_hcmd
-        lda #4
-        jsr k_sio
-        bmi @end
-        lda KBUF+3
-        bne @n128
-        lda KBUF+2
-        beq @end
-        bpl @n
-@n128:  lda #128
-@n:     sta DAUX1
-        sta k_len
-        lda #$52
-        jsr k_hcmd
-        lda k_len
-        jsr k_sio
-        bmi @bad
-        clc
-        rts
-@bad:   lda #0
-        sta k_len
-@end:   sec
-        rts
-
-k_hcmd: sta DCOMND              ; H: (SIO $72) command A on our handle
-        lda #$72
-        sta DDEVIC
-        lda #1
-        sta DUNIT
-        lda #HHANDLE
-        sta DAUX2
-        rts
-
-; read A bytes (0 = 256) into KBUF; DDEVIC/DUNIT/DCOMND/DAUX set.
-; -> Y = status, N = 1 on error
-k_sio:  sta DBYTLO
-        cmp #1
-        lda #0
-        rol                     ; C=1 (A>=1) -> 1 ... inverted below
-        eor #1
-        sta DBYTHI              ; A=0 -> 1 (256 bytes), else 0
-        lda #<KBUF
-        sta DBUFLO
-        lda #>KBUF
-        sta DBUFHI
-        lda #$40
-        sta DSTATS
-        lda #7
-        sta DTIMLO
-        jsr SIOV
-        sty k_err
-        tya
-        rts
-
-k_exec: ldx #$FF
-        txs
-        lda #0
-        sta RUNAD
-        sta RUNAD+1
-        sta k_def+1
-kx_seg:   jsr k_getbyte
-        bcs kx_eof
-        sta kx_st+1
-        jsr k_getbyte
-        bcs k_bad
-        sta kx_st+2
-        and kx_st+1
-        cmp #$FF
-        beq kx_seg                ; $FFFF marker
-        lda k_def+1
-        bne :+
-        lda kx_st+1               ; default entry: first segment
-        sta k_def
-        lda kx_st+2
-        sta k_def+1
-:       jsr k_getbyte
-        bcs k_bad
-        sta k_end
-        jsr k_getbyte
-        bcs k_bad
-        sta k_end+1
-        lda #<k_rts
-        sta INITAD
-        lda #>k_rts
-        sta INITAD+1
-kx_cp:    jsr k_getbyte
-        bcs k_bad
-kx_st:    sta $FFFF
-        lda kx_st+1
-        cmp k_end
-        bne kx_inc
-        lda kx_st+2
-        cmp k_end+1
-        beq kx_sd
-kx_inc:   inc kx_st+1
-        bne kx_cp
-        inc kx_st+2
-        jmp kx_cp
-k_bad:  jmp COLDSV
-kx_sd:    lda INITAD
-        cmp #<k_rts
-        bne :+
-        lda INITAD+1
-        cmp #>k_rts
-        beq kx_seg
-:       jsr kx_init
-        jmp kx_seg
-kx_init:  jmp (INITAD)
-kx_eof:   lda k_err
-        bmi k_bad
-        lda RUNAD+1
-        bne :+
-        lda k_def
-        sta RUNAD
-        lda k_def+1
-        sta RUNAD+1
-:       jmp (RUNAD)
-k_rts:  rts
-
-k_dev:  .res 1
-k_next: .res 2
-k_ss:   .res 1                  ; $80 = 128-byte sectors, $00 = 256
-k_l16:  .res 1                  ; bit 7: MyDOS 16-bit links
-k_pos:  .res 1
-k_len:  .res 1
-k_err:  .res 1
-k_sx:   .res 1
-k_sy:   .res 1
-k_end:  .res 2
-k_def:  .res 2
+        .include "kernel.s"
 
 ; ===========================================================================
         .segment "XEXHDR"

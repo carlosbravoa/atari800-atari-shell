@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""emu.py — run ASH on a py65 6502 with CIO/SIO trapped (no OS ROM needed).
+"""emu.py — run ASH on a py65 6502 with CIO/SIO emulated (no OS ROM needed).
 
-The PC-side regression rig: drives D1:-D4: from ATR files and H: from a
-host folder, types a key script, captures the screen output, and stops when
-a launched program reaches its run address (reporting whether every loaded
-segment landed intact).
+The PC-side regression rig. D1:-D4: are ATR images (writable, in memory;
+--save writes them back), H: is a host folder, E:/K: are a captured screen
+and a key script. CIO is a real dispatcher: devices other than E:/K: go
+through HATABS to the 6502 handler, so ASH's own D: file manager is what
+runs. Stops when a launched program reaches its run address (reporting
+whether its segments landed intact).
 
-  emu.py [--d1 X.ATR] [--d4 Y.ATR] [--hdir DIR] [--boot] "ls" "run game" ...
+  emu.py [--d1 X.ATR] [--d4 Y.ATR] [--hdir DIR] [--boot] [--save] "ls" ...
 """
 import argparse
 import os
@@ -18,6 +20,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 import mkatr  # noqa: E402
 
 CIOV, SIOV, COLDSV = 0xE456, 0xE459, 0xE477
+HATABS = 0x031A
+SENT = 0xFFF0                    # return address that ends a nested call
 EOL = 0x9B
 
 
@@ -25,27 +29,55 @@ class Stop(Exception):
     pass
 
 
+class Disk:
+    """Writable ATR in memory (sector numbers 1..n)."""
+
+    def __init__(self, path):
+        self.path = path
+        d = open(path, "rb").read()
+        self.hdr = bytearray(d[:16])
+        self.ss = int.from_bytes(d[4:6], "little")
+        body = d[16:]
+        self.full = self.ss == 256 and len(body) % 256 == 0
+        self.sec = {}
+        n, o = 1, 0
+        while o < len(body):
+            size = 128 if (self.ss == 128 or n <= 3) else 256
+            step = 256 if (self.full and n <= 3) else size
+            self.sec[n] = bytearray(body[o:o + size])
+            o += step
+            n += 1
+
+    def read(self, n):
+        return bytes(self.sec[n])
+
+    def save(self, path=None):
+        out = bytearray(self.hdr)
+        for n in sorted(self.sec):
+            s = self.sec[n]
+            out += s + (bytes(128) if self.full and n <= 3 else b"")
+        open(path or self.path, "wb").write(out)
+
+
 class Machine:
     def __init__(self, drives, hdir=None, keys=b""):
         self.mpu = MPU()
         self.m = self.mpu.memory
-        self.drives = {}                 # unit -> (ss, sec, raw-bytes)
-        for unit, path in drives.items():
-            ss, sec = mkatr.read_atr(path)
-            self.drives[unit] = (ss, sec)
+        self.disks = {u: Disk(p) for u, p in drives.items()}
         self.hdir = hdir
-        self.hfiles = {}                 # handle -> [bytes, pos]
+        self.hfiles = {}
         self.keys = list(keys)
         self.out = bytearray()
-        self.watch = None                # (run address, segments) after launch
+        self.watch = None
+        self.iocb = {}                   # IOCB index -> 'E', 'K' or handler table address
         for a in (CIOV, SIOV, COLDSV):
             self.m[a] = 0x60
 
-    # -- memory helpers
     def w16(self, a):
         return self.m[a] | (self.m[a + 1] << 8)
 
-    def load_xex(self, path):
+    @staticmethod
+    def load_xex(path):
         d = open(path, "rb").read()
         segs, i = [], 2
         while i < len(d):
@@ -61,47 +93,157 @@ class Machine:
         mpu = self.mpu
         if a is not None:
             mpu.a = a & 0xFF
-        mpu.y = y
+        mpu.y = y & 0xFF
         mpu.p = (mpu.p & ~(mpu.NEGATIVE | mpu.ZERO)) | (mpu.NEGATIVE if y & 0x80 else 0)
         lo = self.m[0x100 + ((mpu.sp + 1) & 0xFF)]
         hi = self.m[0x100 + ((mpu.sp + 2) & 0xFF)]
         mpu.sp = (mpu.sp + 2) & 0xFF
         mpu.pc = ((hi << 8) | lo) + 1
 
-    # -- CIO: E: output, K: input
-    def cio(self):
-        x = self.mpu.x
-        cmd = self.m[0x342 + x]
-        if cmd == 0x0B:
-            self.out.append(self.mpu.a)
-            self.rts()
-        elif cmd == 0x07:
-            if not self.keys:
-                raise Stop("keys exhausted")
-            self.rts(a=self.keys.pop(0))
-        else:                            # open/close: fine
-            self.rts()
+    # -- nested 6502 call (handler entry points)
+    def call(self, addr, a=0, x=0):
+        mpu, m = self.mpu, self.m
+        save = (mpu.pc, mpu.a, mpu.x, mpu.sp)
+        ret = SENT - 1
+        m[0x100 + mpu.sp] = ret >> 8
+        mpu.sp = (mpu.sp - 1) & 0xFF
+        m[0x100 + mpu.sp] = ret & 0xFF
+        mpu.sp = (mpu.sp - 1) & 0xFF
+        mpu.pc, mpu.a, mpu.x = addr, a, x
+        self.loop(until=SENT)
+        y, a = mpu.y, mpu.a
+        mpu.pc, _, mpu.x, mpu.sp = save[0], save[1], save[2], save[3]
+        return y, a
 
-    # -- SIO: disks and H:
+    # -- CIO
+    def cio(self):
+        m, x = self.m, self.mpu.x
+        io = 0x340 + x
+        cmd = m[io + 2]
+        dev = self.iocb.get(x)
+        if cmd == 3:                                   # OPEN
+            name = self.str_at(self.w16(io + 4))
+            letter = name[:1].upper()
+            unit = int(name[1]) if len(name) > 2 and name[1].isdigit() and name[2] == ":" else 1
+            if letter in ("E", "K"):
+                self.iocb[x] = letter
+                return self.rts(1)
+            tab = self.find_handler(letter)
+            if tab is None:
+                return self.rts(130)
+            m[io + 1] = unit
+            y, _ = self.hcall(tab, 0, x)
+            if y < 128:
+                self.iocb[x] = tab
+            return self.rts(y)
+        if cmd == 12:                                  # CLOSE
+            if isinstance(dev, int):
+                y, _ = self.hcall(dev, 1, x)
+                self.iocb.pop(x, None)
+                return self.rts(y)
+            self.iocb.pop(x, None)
+            return self.rts(1)
+        if dev == "E" or (dev is None and x == 0):
+            if cmd in (0x0B, 0x09):
+                self.out.append(self.mpu.a)
+            return self.rts(1)
+        if dev == "K":
+            if cmd in (5, 7):
+                if not self.keys:
+                    raise Stop("keys exhausted")
+                return self.rts(1, a=self.keys.pop(0))
+            return self.rts(1)
+        if cmd >= 14:                                  # XIO
+            tab = dev
+            if tab is None:
+                name = self.str_at(self.w16(io + 4))
+                tab = self.find_handler(name[:1].upper())
+                m[io + 1] = int(name[1]) if len(name) > 2 and name[1].isdigit() else 1
+                if tab is None:
+                    return self.rts(130)
+            y, _ = self.hcall(tab, 5, x)
+            return self.rts(y)
+        if not isinstance(dev, int):
+            return self.rts(133)
+        n = self.w16(io + 8)
+        buf = self.w16(io + 4)
+        if cmd in (7, 5):                              # GET chars / record
+            if n == 0:
+                y, a = self.hcall(dev, 2, x)
+                return self.rts(y, a=a)
+            got = 0
+            y = 1
+            while got < n:
+                y, a = self.hcall(dev, 2, x)
+                if y >= 128:
+                    break
+                m[buf + got] = a
+                got += 1
+                if cmd == 5 and a == EOL:
+                    break
+            m[io + 8:io + 10] = got.to_bytes(2, "little")
+            return self.rts(y, a=a if got else 0)
+        if cmd in (0x0B, 0x09):                        # PUT chars / record
+            if n == 0:
+                y, _ = self.hcall(dev, 3, x, a=self.mpu.a)
+                return self.rts(y)
+            y = 1
+            for i in range(n):
+                c = m[buf + i]
+                y, _ = self.hcall(dev, 3, x, a=c)
+                if y >= 128 or (cmd == 9 and c == EOL):
+                    break
+            return self.rts(y)
+        if cmd == 13:
+            y, _ = self.hcall(dev, 4, x)
+            return self.rts(y)
+        return self.rts(132)
+
+    def find_handler(self, letter):
+        for i in range(0, 36, 3):
+            if self.m[HATABS + i] == ord(letter):
+                return self.w16(HATABS + i + 1)
+        return None
+
+    def hcall(self, tab, k, x, a=0):
+        m = self.m
+        io = 0x340 + x
+        m[0x20:0x2C] = m[io:io + 12]                   # ZIOCB
+        m[0x2E] = x
+        y, a = self.call(self.w16(tab + 2 * k) + 1, a=a, x=x)
+        m[io + 3] = y
+        return y, a
+
+    def str_at(self, a):
+        s = bytearray()
+        while self.m[a] not in (EOL, 0) and len(s) < 120:
+            s.append(self.m[a])
+            a += 1
+        return s.decode("latin1")
+
+    # -- SIO
     def sio(self):
         m = self.m
         dev = m[0x300] + m[0x301] - 1
         cmd, buf, n = m[0x302], self.w16(0x304), self.w16(0x308)
         aux1, aux2 = m[0x30A], m[0x30B]
         if 0x31 <= dev <= 0x34:
-            unit = dev - 0x30
-            if unit not in self.drives:
+            d = self.disks.get(dev - 0x30)
+            if d is None:
                 return self.rts(138)
-            ss, sec = self.drives[unit]
+            s = aux1 | (aux2 << 8)
             if cmd == 0x53:
-                m[buf:buf + 4] = bytes([0x10 | (0x20 if ss == 256 else 0), 0xFF, 0xE0, 0])
+                m[buf:buf + 4] = bytes([0x10 | (0x20 if d.ss == 256 else 0), 0xFF, 0xE0, 0])
                 return self.rts(1)
+            if s not in d.sec:
+                return self.rts(144)
+            if len(d.sec[s]) != n:
+                return self.rts(143)
             if cmd == 0x52:
-                s = aux1 | (aux2 << 8)
-                data = sec(s)
-                if len(data) != n:
-                    return self.rts(143)     # wrong frame size = checksum error
-                m[buf:buf + n] = data
+                m[buf:buf + n] = d.sec[s]
+                return self.rts(1)
+            if cmd in (0x50, 0x57):
+                d.sec[s][:] = m[buf:buf + n]
                 return self.rts(1)
             return self.rts(139)
         if dev == 0x72 and self.hdir:
@@ -110,39 +252,46 @@ class Machine:
 
     def hdev(self, cmd, aux1, aux2, buf, n):
         m, h = self.m, aux2 & 3
+        p = lambda f: os.path.join(self.hdir, f)
         if cmd == 0x4F:
             name = bytes(m[buf:buf + 64]).split(b"\0")[0].decode().upper()
             if aux1 == 6:
                 lines = b""
                 for f in sorted(os.listdir(self.hdir)):
-                    p = os.path.join(self.hdir, f)
-                    if os.path.isfile(p):
-                        lines += f.upper().ljust(14).encode() + str(os.path.getsize(p)).encode() + b"\x9b"
-                self.hfiles[h] = [lines + b"END OF DIRECTORY\x9b", 0]
+                    if os.path.isfile(p(f)):
+                        lines += f.upper().ljust(14).encode() + str(os.path.getsize(p(f))).encode() + b"\x9b"
+                self.hfiles[h] = [lines + b"END OF DIRECTORY\x9b", 0, None]
+                return self.rts(1)
+            if aux1 in (8, 9):
+                self.hfiles[h] = [bytearray(), 0, name]
                 return self.rts(1)
             for f in os.listdir(self.hdir):
                 if f.upper() == name:
-                    self.hfiles[h] = [open(os.path.join(self.hdir, f), "rb").read(), 0]
+                    self.hfiles[h] = [open(p(f), "rb").read(), 0, None]
                     return self.rts(1)
             return self.rts(144)
         if cmd == 0x53:
-            d, p = self.hfiles.get(h, [b"", 0])
-            av = min(len(d) - p, 65535)
+            d, pos, _ = self.hfiles.get(h, [b"", 0, None])
+            av = min(len(d) - pos, 65535)
             m[buf:buf + 4] = bytes([1, 1 | (2 if av == 0 else 0), av & 255, av >> 8])
             return self.rts(1)
         if cmd == 0x52:
-            d, p = self.hfiles[h]
-            if p + n > len(d):
+            d, pos, _ = self.hfiles[h]
+            if pos + n > len(d):
                 return self.rts(144)
-            m[buf:buf + n] = d[p:p + n]
-            self.hfiles[h][1] = p + n
+            m[buf:buf + n] = d[pos:pos + n]
+            self.hfiles[h][1] = pos + n
+            return self.rts(1)
+        if cmd == 0x57:
+            self.hfiles[h][0] += bytes(m[buf:buf + n])
             return self.rts(1)
         if cmd == 0x43:
-            self.hfiles.pop(h, None)
+            f = self.hfiles.pop(h, None)
+            if f and f[2]:
+                open(p(f[2]), "wb").write(f[0])
             return self.rts(1)
         if cmd == 0x58:
             arg = bytes(m[buf:buf + 64]).split(b"\0")[0].decode().upper()
-            p = lambda f: os.path.join(self.hdir, f)
             if aux1 == 33 and os.path.exists(p(arg)):
                 os.remove(p(arg))
                 return self.rts(1)
@@ -154,11 +303,12 @@ class Machine:
             return self.rts(144)
         return self.rts(139)
 
-    def run(self, pc, steps=50_000_000):
+    def loop(self, until=None, steps=200_000_000):
         mpu = self.mpu
-        mpu.pc = pc
         for _ in range(steps):
             p = mpu.pc
+            if p == until:
+                return
             if p == CIOV:
                 self.cio()
             elif p == SIOV:
@@ -170,6 +320,10 @@ class Machine:
             else:
                 mpu.step()
         raise Stop("step limit")
+
+    def run(self, pc):
+        self.mpu.pc = pc
+        self.loop()
 
     def screen(self):
         s = []
@@ -191,6 +345,23 @@ class Machine:
         return "".join(s)
 
 
+def build(a, keys):
+    drives = {u: getattr(a, f"d{u}") for u in range(1, 5) if getattr(a, f"d{u}")}
+    mc = Machine(drives, a.hdir, keys)
+    m = mc.m
+    if a.boot:
+        d = mc.disks[1]
+        m[0x0700:0x0800] = d.read(1) + d.read(2)
+        mc.mpu.sp = 0xFD
+        entry = 0x0706
+    else:
+        for s, d in mc.load_xex(a.xex):
+            if s != 0x02E0:
+                m[s:s + len(d)] = d
+        entry = 0x2000
+    return mc, entry
+
+
 def main():
     ap = argparse.ArgumentParser()
     for u in range(1, 5):
@@ -199,25 +370,11 @@ def main():
     ap.add_argument("--xex", default=os.path.join(os.path.dirname(__file__), "../build/ash.xex"))
     ap.add_argument("--boot", action="store_true", help="boot D1: through its boot sector")
     ap.add_argument("--expect", help="xex whose segments must be in RAM at the run address")
+    ap.add_argument("--save", action="store_true", help="write modified disks back")
     ap.add_argument("cmds", nargs="*")
     a = ap.parse_args()
-    drives = {u: getattr(a, f"d{u}") for u in range(1, 5) if getattr(a, f"d{u}")}
     keys = b"".join(c.encode("latin1").replace(b"\t", b"\x7f") + b"\x9b" for c in a.cmds)
-    mc = Machine(drives, a.hdir, keys)
-    m = mc.m
-    m[0x0A:0x0C] = b"\x00\x00"
-    if a.boot:
-        ss, sec = mc.drives[1]
-        boot = sec(1) + sec(2)
-        m[0x0700:0x0800] = boot
-        m[0x01FF], m[0x01FE] = 0x01, 0xFF    # return to $0200 = BRK if it RTSes
-        mc.mpu.sp = 0xFD
-        entry = 0x0706
-    else:
-        for s, d in mc.load_xex(a.xex):
-            if s != 0x02E0:
-                m[s:s + len(d)] = d
-        entry = 0x2000
+    mc, entry = build(a, keys)
     if a.expect:
         segs = mc.load_xex(a.expect)
         run = next((int.from_bytes(d, "little") for s, d in segs if s == 0x2E0), segs[0][0])
@@ -229,8 +386,11 @@ def main():
     print(mc.screen())
     print(f"--- stop: {why}")
     if a.expect and why.startswith("reached"):
-        bad = [s for s, d in mc.watch[1] if s not in (0x2E0, 0x2E2) and bytes(m[s:s + len(d)]) != d]
+        bad = [s for s, d in mc.watch[1] if s not in (0x2E0, 0x2E2) and bytes(mc.m[s:s + len(d)]) != d]
         print("segments intact" if not bad else f"MISMATCH at {[hex(b) for b in bad]}")
+    if a.save:
+        for d in mc.disks.values():
+            d.save()
 
 
 if __name__ == "__main__":

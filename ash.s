@@ -71,6 +71,7 @@ E_DEEP  = 6
 E_USAGE = 7
 E_NUM   = 8
 E_ROFS  = 9
+E_NODEV = 10
 
 ; ---- zero page --------------------------------------------------------------
         .zeropage
@@ -107,6 +108,7 @@ hwbuf:  .res 128                ; h: write frame
 dcw:    .res 2+16+128           ; cp: destination directory (CWSIZE)
 hwlen:  .res 1
 xcmd:   .res 1
+hpresent: .res 1              ; the board's h: answered at boot
 wdev:   .res 1
 wquiet: .res 1
 ename:  .res 16                 ; editor state
@@ -212,6 +214,7 @@ start:  cld
         lda #0
         sta COLDST
         sta theme
+        sta hpresent
         sta hist_n
         sta hist_head
         lda #<361
@@ -305,7 +308,13 @@ screen_setup:
 
 ; first drive that answers: D1:, then D4: (the board's HDD.ATR), else H:
 pick_drive:
-        ldx #1
+        lda #$53                ; is the board's h: device there at all?
+        jsr k_hcmd
+        lda #4
+        jsr k_sio
+        bmi :+
+        inc hpresent
+:       ldx #1
         jsr dstat
         ldx #1
         bcc @ok
@@ -314,6 +323,9 @@ pick_drive:
         ldx #4
         bcc @ok
         ldx #0
+        lda hpresent
+        bne @ok
+        ldx #1                  ; a real Atari with no disk in: d1: anyway
 @ok:    stx cwd_drive
         lda #0
         sta cwd_depth
@@ -1095,7 +1107,13 @@ resolve:
         lda tmp2
         cmp #':'
         bne @nod
-        lda #0
+        lda hpresent
+        bne :+
+        lda #E_NODEV
+        sta err
+        sec
+        rts
+:       lda #0
         ldy #2
         bne @drv
 @dd:    cmp #'d'
@@ -2534,6 +2552,8 @@ cmd_df: ldx #1
         bcs :+
         jmp @l
 :
+        lda hpresent
+        beq @r
         lda #0
         sta dc_valid
         jsr h_dir
@@ -2755,8 +2775,8 @@ c_167:  .byte "locked, or directory not empty",0
 c_169:  .byte "directory full",0
 c_170:  .byte "no such file",0
 c_175:  .byte "not a DOS 2 disk (read-only)",0
-errlo:  .lobytes e_noent,e_notdir,e_io,e_isdir,e_noexec,e_deep,e_usage,e_num,e_rofs
-errhi:  .hibytes e_noent,e_notdir,e_io,e_isdir,e_noexec,e_deep,e_usage,e_num,e_rofs
+errlo:  .lobytes e_noent,e_notdir,e_io,e_isdir,e_noexec,e_deep,e_usage,e_num,e_rofs,e_nodev
+errhi:  .hibytes e_noent,e_notdir,e_io,e_isdir,e_noexec,e_deep,e_usage,e_num,e_rofs,e_nodev
 e_noent:  .byte "no such file or directory",0
 e_notdir: .byte "not a directory",0
 e_io:     .byte "i/o error",0
@@ -2766,6 +2786,7 @@ e_deep:   .byte "too many levels",0
 e_usage:  .byte "missing operand",0
 e_num:    .byte "bad number",0
 e_rofs:   .byte "not supported here",0
+e_nodev:  .byte "no h: device on this machine",0
 
 s_help:
         .byte "ls [-l] [path]   list a directory",EOL

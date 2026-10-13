@@ -67,6 +67,14 @@ keeps `D:` alive.
 Note: `.BAS` files written by BASIC's `SAVE` are tokenized, not text —
 `cat` shows binary; use `LIST "D:NAME.LST"` for a text listing.
 
+## On a real Atari
+
+Disk access is plain SIO through the OS, so any Atari drive or SIO2SD /
+SDrive / FujiNet works, at standard speed. `h:` is the Tang Nano board's
+SD-folder device; ASH probes it at boot and hides it when it isn't there.
+Tested on the board's XL/XE (64 KB); a 400/800 should work but is untested.
+Writable disks are 720-sector SD or DD; ED and big MyDOS disks are read-only.
+
 ## How it works
 
 - `$2000-$55FF` shell, `$5600-$65FF` buffers, `$6600+` editor text / BASIC.

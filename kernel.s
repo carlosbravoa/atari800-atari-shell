@@ -1183,6 +1183,9 @@ v_load: lda v_dirty             ; unsaved allocations go out first
         lda vtbuf
         cmp #2
         bne @ro
+        lda vtbuf+2             ; only 720-sector disks are written: 768+
+        cmp #3                  ; (ED's 1010, big MyDOS) stay read-only
+        bcs @ro
         clc
         rts
 @ro:    ldy #ST_FORMAT

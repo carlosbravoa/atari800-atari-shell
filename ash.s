@@ -233,7 +233,7 @@ start:  cld
 .endif
         jsr iprint
         .byte "ASH 1.0 - the Atari SHell", EOL
-        .byte "type 'help' for commands", EOL, 0
+        .byte "type help for commands, basic for BASIC", EOL, 0
         jsr pick_drive
         jmp mainloop
 

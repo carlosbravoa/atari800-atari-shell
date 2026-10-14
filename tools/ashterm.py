@@ -32,7 +32,7 @@ MB_CMD, MB_PROMPT = 0x660, 0x6B0
 RAMWIN = 0x8000
 EOL = 0x9B
 
-NO_BOARD = "no Atari found: make sure the board is connected and powered via USB"
+NO_BOARD = "no board found on USB: connect the Atari board to this computer and make sure it is powered on"
 NO_ASH = ("the board answers but ASH-TN is not running on it: deploy "
           "build/ash-tn.xex or boot ASH-TN.ATR, then retry")
 BUSY = ("ASH is not at its prompt (a pager, the editor, or a running program "

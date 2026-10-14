@@ -219,8 +219,8 @@ cmd_pc: jsr pc_ping
 pc_fail:
         jsr iprint
         .byte "pc link: no answer from the pc.",EOL
-        .byte "make sure the board is powered via usb",EOL
-        .byte "and ashterm is running on the pc.",EOL,0
+        .byte "connect the board to the pc with the",EOL
+        .byte "usb cable and run ashterm there.",EOL,0
         clc
         rts
 pc_ok:  jsr iprint

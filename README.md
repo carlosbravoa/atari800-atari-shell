@@ -76,6 +76,28 @@ keeps `D:` alive.
 Note: `.BAS` files written by BASIC's `SAVE` are tokenized, not text —
 `cat` shows binary; use `LIST "D:NAME.LST"` for a text listing.
 
+## ASH-TN: the Tang Nano 20K build
+
+`make tn` builds `ash-tn.xex` (and `make release` adds `ASH-TN.XEX` /
+`ASH-TN.ATR`): the same shell plus a page-6 **mailbox** (`$0640`, see
+`tn.s`) through which the PC drives it over the board's PC link with no
+keystroke injection, plus two commands: `pc` (is the PC program there? — if
+not: *make sure the board is powered via usb and ashterm is running on the
+pc*) and `getw` (used by `get`). On the PC:
+
+```
+python3 tools/ashterm.py                 # terminal: ASH's own prompt, exact output, Ctrl-C aborts
+python3 tools/ashterm.py -c "ls -l" -c "cat readme.txt"
+python3 tools/ashterm.py get d1:game.xex ~/game.xex   # any disk, h:, MyDOS subdir
+python3 tools/ashterm.py put ~/game.xex d1:           # via h:, then cp
+```
+`ashterm` tells you what to check when it can't work: no board on USB (and
+the `modprobe` hint), board up but ASH-TN not running, or the shell busy
+in a pager / the editor / a launched program. Protocol: the PC pokes a
+command line and sets `MB_CMDREQ`; ASH runs it (echoed on the TV, never
+paged), mirrors the output to `$6A00` with a running length, and reports
+status 1 (ok) / 2 (error, with the code) / 3 (a program was launched).
+
 ## On a real Atari
 
 Disk access is plain SIO through the OS, so any Atari drive or SIO2SD /

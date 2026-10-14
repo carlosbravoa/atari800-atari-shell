@@ -73,11 +73,28 @@ class Ash:
     def close(self):
         self.l.close()
 
+    def _io(self, fn, *args, tries=40):
+        """Link calls time out while the firmware is inside an SIO transaction
+        (ASH reading a disk); wait it out and retry."""
+        for i in range(tries):
+            try:
+                return fn(*args)
+            except LinkError:
+                if i == tries - 1:
+                    raise AshError("the link stopped answering (" + BUSY + ")")
+                time.sleep(0.15)
+
+    def rpeek(self, a, n):
+        return self._io(self.l.peek, a, n)
+
+    def poke(self, a, data):
+        return self._io(self.l.poke, a, data)
+
     def peek(self, a, n):
         """A stable read: the link can serve stale bytes, so read until two agree."""
         last = None
         for _ in range(6):
-            cur = self.l.peek(a, n)
+            cur = self.rpeek(a, n)
             if cur == last:
                 return cur
             last = cur
@@ -99,7 +116,7 @@ class Ash:
 
     def pong(self, hdr):
         if hdr[MB_PING - MB] != hdr[MB_PONG - MB]:
-            self.l.poke(MB_PONG, bytes([hdr[MB_PING - MB]]))
+            self.poke(MB_PONG, bytes([hdr[MB_PING - MB]]))
 
     def run(self, line, sink=None, timeout=120):
         """Run one command; stream its output to sink(text). Returns (status, err, cioerr)."""
@@ -109,10 +126,10 @@ class Ash:
         if hdr[MB_STATUS - MB] == 0 or hdr[MB_CMDREQ - MB]:
             raise AshError(BUSY)
         data = line.encode("latin1")[:79] + b"\0"
-        self.l.poke(MB_CMD, data)
+        self.poke(MB_CMD, data)
         seq = hdr[MB_SEQ - MB]
-        self.l.poke(MB_CMDREQ, b"\x01")
-        out = self.l.peek(MB_OUT, 2)
+        self.poke(MB_CMDREQ, b"\x01")
+        out = self.rpeek(MB_OUT, 2)
         base = int.from_bytes(out, "little")
         got, t0, started = 0, time.time(), False
         while True:
@@ -123,7 +140,7 @@ class Ash:
             if st == 0 or hdr[MB_SEQ - MB] != seq:
                 started = True
             if n > got:
-                chunk = self.l.peek(base + got, min(n - got, 1024))
+                chunk = self.rpeek(base + got, min(n - got, 1024))
                 if sink:
                     sink(atascii(chunk))
                 got += len(chunk)
@@ -149,7 +166,7 @@ class Ash:
             hdr = self.peek(MB, 0x20)
             n = int.from_bytes(hdr[MB_RAM - MB:MB_RAM - MB + 2], "little")
             for off in range(0, n, 1024):
-                data += self.l.peek(RAMWIN + off, min(1024, n - off))
+                data += self.rpeek(RAMWIN + off, min(1024, n - off))
             if progress:
                 progress(len(data))
             if not hdr[MB_MORE - MB]:
@@ -177,7 +194,7 @@ def main():
             src = a.args[0]
             dst = a.args[1] if len(a.args) > 1 else os.path.basename(src.split(":")[-1].split("/")[-1])
             n = ash.get(src, dst, progress=lambda k: print(f"\r{k} bytes", end="", flush=True))
-            print(f"\r{dst}: {n} bytes")
+            print(f"\r{dst}: {n} bytes        ")
         elif a.op == "put":
             if not a.args:
                 sys.exit("usage: ashterm put FILE [DST]")

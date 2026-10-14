@@ -15,6 +15,7 @@ import os
 import sys
 
 from py65.devices.mpu6502 import MPU
+from py65.memory import ObservableMemory
 
 sys.path.insert(0, os.path.dirname(__file__))
 import mkatr  # noqa: E402
@@ -64,9 +65,43 @@ MB_CMDREQ, MB_STATUS, MB_LEN, MB_PING, MB_PONG, MB_CMD = 0x643, 0x644, 0x64B, 0x
 MB_OUT, MB_RAM, MB_MORE = 0x647, 0x651, 0x653
 
 
+class Cart:
+    """Williams 32K (.car type 22): a read of $D500+n maps bank n at $A000 and
+    enables the cart; a read of $D508 disables it. The cart logic only resets
+    on a firmware power-cycle, never on an Atari RESET."""
+
+    def __init__(self, path):
+        d = open(path, "rb").read()
+        assert d[:4] == b"CART" and int.from_bytes(d[4:8], "big") == 22, "not a Williams 32K .car"
+        self.banks = [d[16 + i * 8192:16 + (i + 1) * 8192] for i in range(4)]
+        self.enabled, self.bank = True, 0
+
+    def attach(self, mem):
+        mem.subscribe_to_read(range(0xA000, 0xC000), self.read)
+        mem.subscribe_to_read(range(0xD500, 0xD510), self.ctl)
+
+    def read(self, a):
+        return self.banks[self.bank][a - 0xA000] if self.enabled else None
+
+    def ctl(self, a):
+        if a & 8:
+            self.enabled = False
+        else:
+            self.enabled, self.bank = True, a & 3
+        return 0xFF
+
+    def vector(self, mem, off):               # $BFFA run / $BFFE init
+        return self.banks[0][off] | (self.banks[0][off + 1] << 8)
+
+
 class Machine:
-    def __init__(self, drives, hdir=None, keys=b"", mbcmds=None):
-        self.mpu = MPU()
+    def __init__(self, drives, hdir=None, keys=b"", mbcmds=None, cart=None):
+        self.cart = cart
+        if cart:
+            self.mpu = MPU(memory=ObservableMemory())
+            cart.attach(self.mpu.memory)
+        else:
+            self.mpu = MPU()
         self.m = self.mpu.memory
         self.mbcmds = list(mbcmds or [])  # ASH-TN: commands to post via the mailbox
         self.mbout = []                   # (command, output bytes) collected
@@ -388,11 +423,16 @@ class Machine:
 
 def build(a, keys):
     drives = {u: getattr(a, f"d{u}") for u in range(1, 5) if getattr(a, f"d{u}")}
-    mc = Machine(drives, a.hdir, keys, a.mb)
+    cart = Cart(a.cart) if a.cart else None
+    mc = Machine(drives, a.hdir, keys, a.mb, cart)
     mc.nopong = a.no_pong
     m = mc.m
     m[0x2FC] = 0 if keys else 0xFF
-    if a.boot:
+    if cart:
+        mc.mpu.sp = 0xFD
+        mc.call(cart.vector(m, 0x1FFE))           # init: plants the copier
+        entry = cart.vector(m, 0x1FFA)            # run: the copier
+    elif a.boot:
         d = mc.disks[1]
         m[0x0700:0x0800] = d.read(1) + d.read(2)
         mc.mpu.sp = 0xFD
@@ -412,6 +452,8 @@ def main():
     ap.add_argument("--hdir")
     ap.add_argument("--xex", default=os.path.join(os.path.dirname(__file__), "../build/ash.xex"))
     ap.add_argument("--boot", action="store_true", help="boot D1: through its boot sector")
+    ap.add_argument("--cart", help="boot this ASH.CAR as the OS would (init vector, then run vector)")
+    ap.add_argument("--reset", action="store_true", help="after the launched program starts, press RESET (JSR (DOSINI)) and report")
     ap.add_argument("--expect", help="xex whose segments must be in RAM at the run address")
     ap.add_argument("--save", action="store_true", help="write modified disks back")
     ap.add_argument("--esc", action="store_true", help=r"decode \xNN escapes in cmds (key codes)")
@@ -422,6 +464,7 @@ def main():
     cmds = [c.encode("latin1").decode("unicode_escape") for c in a.cmds] if a.esc else a.cmds
     keys = b"".join(c.encode("latin1").replace(b"\t", b"\x7f") + b"\x9b" for c in cmds)
     mc, entry = build(a, keys)
+    cart, m = mc.cart, mc.m
     if a.expect:
         segs = mc.load_xex(a.expect)
         run = next((int.from_bytes(d, "little") for s, d in segs if s == 0x2E0), segs[0][0])
@@ -438,6 +481,18 @@ def main():
     if a.expect and why.startswith("reached"):
         bad = [s for s, d in mc.watch[1] if s not in (0x2E0, 0x2E2) and bytes(mc.m[s:s + len(d)]) != d]
         print("segments intact" if not bad else f"MISMATCH at {[hex(b) for b in bad]}")
+        if cart:
+            print(f"cart enabled while the program runs: {cart.enabled}")
+        if a.reset and cart:
+            dosini = mc.w16(0x0C)
+            print(f"RESET: COLDST={m[0x244]}, DOSINI=${dosini:04X}")
+            mc.watch = None
+            try:
+                mc.call(dosini)
+                why2 = "returned"
+            except Stop as e:
+                why2 = str(e)
+            print(f"after DOSINI: {why2}; cart enabled: {cart.enabled}, bank {cart.bank}, GINTLK={m[0x3FA]}")
     if a.save:
         for d in mc.disks.values():
             d.save()

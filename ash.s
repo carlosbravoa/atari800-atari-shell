@@ -2522,8 +2522,17 @@ launch: jsr close_all
         ldy #>nbuf
         jsr puts
         jsr crlf
+.ifdef CART
+        lda #0                  ; RESET = warm start -> DOSINI -> k_cartreset
+        sta COLDST
+        lda #<k_cartreset
+        sta DOSINI
+        lda #>k_cartreset
+        sta DOSINI+1
+.else
         lda #1
         sta COLDST
+.endif
 .ifdef TN
         lda #3                  ; tell the PC the shell is gone
         sta MB_STATUS

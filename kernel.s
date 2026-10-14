@@ -1798,6 +1798,19 @@ dec3:   lda #<100
 s_free: .byte " FREE SECTORS",EOL
 bitmask:.byte $80,$40,$20,$10,$08,$04,$02,$01
 
+.ifdef CART
+; RESET after a launched program (cartridge build): the OS warm start calls
+; DOSINI -> here. Re-enable the cartridge and cold start, so the OS finds
+; it and the copier runs ASH again.
+k_cartreset:
+        lda #0
+        sta $D40E               ; NMIEN off around the switch (GINTLK)
+        lda $D500               ; Williams: bank 0, cart on
+        lda #1
+        sta $03FA               ; GINTLK: cartridge present
+        jmp COLDSV
+.endif
+
 ; ---- kernel data (copied with the code) ----------------------------------------
 k_memlo:.word fms_end
 k_dev:  .res 1

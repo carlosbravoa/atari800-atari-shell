@@ -233,7 +233,7 @@ start:  cld
 .endif
         jsr iprint
         .byte "ASH 1.0 - the Atari SHell", EOL
-        .byte "type help for commands, basic for BASIC", EOL, 0
+        .byte "Type help for commands or basic to exit", EOL, 0
         jsr pick_drive
         jmp mainloop
 
@@ -2851,12 +2851,12 @@ cmdnames:
         .byte "clear",0,"cls",0,"help",0,"theme",0,"peek",0,"poke",0
         .byte "echo",0,"history",0,"reboot",0,"basic",0,"ver",0,"uname",0
         .byte "rm",0,"mv",0,"cp",0,"mkdir",0,"rmdir",0,"lock",0,"unlock",0
-        .byte "format",0,"edit",0,"about",0,"lp",0
+        .byte "format",0,"edit",0,"about",0,"lp",0,"exit",0
 .ifdef TN
         .byte "pc",0,"getw",0
 .endif
         .byte 0
-.define CMDS cmd_ls,cmd_ls,cmd_cd,cmd_pwd,cmd_cat,cmd_cat,cmd_cat,cmd_xxd,cmd_xxd,cmd_file,cmd_run,cmd_df,cmd_df,cmd_clear,cmd_clear,cmd_help,cmd_theme,cmd_peek,cmd_poke,cmd_echo,cmd_history,cmd_reboot,cmd_basic,cmd_ver,cmd_ver,cmd_rm,cmd_mv,cmd_cp,cmd_mkdir,cmd_rm,cmd_lock,cmd_unlock,cmd_format,cmd_edit,cmd_about,cmd_lp
+.define CMDS cmd_ls,cmd_ls,cmd_cd,cmd_pwd,cmd_cat,cmd_cat,cmd_cat,cmd_xxd,cmd_xxd,cmd_file,cmd_run,cmd_df,cmd_df,cmd_clear,cmd_clear,cmd_help,cmd_theme,cmd_peek,cmd_poke,cmd_echo,cmd_history,cmd_reboot,cmd_basic,cmd_ver,cmd_ver,cmd_rm,cmd_mv,cmd_cp,cmd_mkdir,cmd_rm,cmd_lock,cmd_unlock,cmd_format,cmd_edit,cmd_about,cmd_lp,cmd_basic
 .ifdef TN
 .define CMDS_TN cmd_pc,cmd_getw
 cmdlo:  .lobytes CMDS, CMDS_TN
@@ -2918,7 +2918,8 @@ s_help:
 .ifdef TN
         .byte "pc               is ashterm on the pc?",EOL
 .endif
-        .byte "history  clear  echo  basic  reboot",EOL
+        .byte "history  clear  echo  reboot",EOL
+        .byte "basic / exit     leave ASH for BASIC",EOL
         .byte EOL
         .byte "tab completes names, arrows recall",EOL
         .byte "history, ctrl-u kills the line,",EOL

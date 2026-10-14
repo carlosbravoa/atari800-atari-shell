@@ -91,9 +91,9 @@ python3 tools/ashterm.py -c "ls -l" -c "cat readme.txt"
 python3 tools/ashterm.py get d1:game.xex ~/game.xex   # any disk, h:, MyDOS subdir
 python3 tools/ashterm.py put ~/game.xex d1:           # via h:, then cp
 ```
-`ashterm` tells you what to check when it can't work: no board on USB (and
-the `modprobe` hint), board up but ASH-TN not running, or the shell busy
-in a pager / the editor / a launched program. Protocol: the PC pokes a
+`ashterm` tells you what to check when it can't work: no board connected
+and powered via USB, board up but ASH-TN not running, or the shell busy in
+a pager / the editor / a launched program. Protocol: the PC pokes a
 command line and sets `MB_CMDREQ`; ASH runs it (echoed on the TV, never
 paged), mirrors the output to `$6A00` with a running length, and reports
 status 1 (ok) / 2 (error, with the code) / 3 (a program was launched).

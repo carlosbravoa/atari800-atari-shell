@@ -32,8 +32,7 @@ MB_CMD, MB_PROMPT = 0x660, 0x6B0
 RAMWIN = 0x8000
 EOL = 0x9B
 
-NO_BOARD = ("no Atari on the USB link: make sure the board is powered via USB-C "
-            "(Linux: `sudo modprobe ftdi_sio` if /dev/ttyUSB* is missing)")
+NO_BOARD = "no Atari found: make sure the board is connected and powered via USB"
 NO_ASH = ("the board answers but ASH-TN is not running on it: deploy "
           "build/ash-tn.xex or boot ASH-TN.ATR, then retry")
 BUSY = ("ASH is not at its prompt (a pager, the editor, or a running program "
@@ -64,8 +63,8 @@ class Ash:
     def __init__(self):
         try:
             self.l = AtariLink()
-        except LinkError as e:
-            raise AshError(NO_BOARD + f"\n({e})")
+        except LinkError:
+            raise AshError(NO_BOARD)
         self.hdr = None
         if not self.alive():
             raise AshError(NO_ASH)

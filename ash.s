@@ -2622,7 +2622,9 @@ cmd_df: ldx #1
         jsr pdec
         jsr iprint
         .byte " files",EOL,0
-@r:     rts
+@r:     lda #0                  ; probing empty drives is not an error
+        sta err
+        rts
 
 cmd_clear:
         lda #$7D

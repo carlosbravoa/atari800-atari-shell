@@ -40,9 +40,10 @@ build/boot.bin: boot.s boot.cfg
 	$(LD65) -C boot.cfg -o $@ build/boot.o
 
 # release/ASH.ATR (bootable, SD, with ASH.XEX + README.TXT) and release/ASH.XEX
-release: all tn
+release: all tn cart
 	cp build/ash.xex release/ASH.XEX
 	cp build/ash-tn.xex release/ASH-TN.XEX
+	cp build/ASH.CAR release/ASH.CAR
 	python3 tools/mkatr.py -o release/ASH.ATR --shell build/ash.xex --boot build/boot.bin \
 	    release/ASH.XEX release/README.TXT
 	python3 tools/mkatr.py -o release/ASH-TN.ATR --shell build/ash-tn.xex --boot build/boot.bin \

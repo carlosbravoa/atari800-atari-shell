@@ -96,6 +96,19 @@ command line and sets `MB_CMDREQ`; ASH runs it (echoed on the TV, never
 paged), mirrors the output to `$6A00` with a running length, and reports
 status 1 (ok) / 2 (error, with the code) / 3 (a program was launched).
 
+### ASH.CAR: the shell as a cartridge
+
+`make cart` packs ASH-TN into a Williams 32K cartridge image (`release/
+ASH.CAR`): attach it (OSD → Cart) and the machine boots straight into the
+shell, no disk needed; RESET after a game comes back to the prompt; the
+cartridge switches itself off once the shell is in RAM, so `$A000-$BFFF`
+is free for programs and `basic` / BASIC's `DOS` work as usual. Bank 0 is
+`cart.s` (a copier parked in page 6 by the init vector, GINTLK-safe
+switch-off), banks 1-2 carry the shell image, `k_cartreset` in the kernel
+is the RESET hook. Verified on the board: boot, launch, warm reset, BASIC
+round trip. Persistence across power cycles needs the firmware's `boot=`
+/ default-cartridge setting (see `specs/ash-tn-proposal.md`).
+
 ## On a real Atari
 
 Disk access is plain SIO through the OS, so any Atari drive or SIO2SD /

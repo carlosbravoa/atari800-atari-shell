@@ -21,6 +21,7 @@ BOOTQ   = $09
 DOSVEC  = $0A
 DOSINI  = $0C
 BRKKEY  = $11
+RTCLOK  = $12
 LMARGN  = $52
 RAMTOP  = $6A
 COLDST  = $0244
@@ -54,7 +55,7 @@ ICBLL   = $0348
 ICBLH   = $0349
 ICAX1   = $034A
 ICAX2   = $034B
-BASICLO = $6700                 ; MEMLO for the `basic` command (above us)
+BASICLO = $6A00                 ; MEMLO for the `basic` command (above us)
 
 EOL     = $9B
 MAXLEN  = 76                    ; input line (just under two screen rows)
@@ -84,6 +85,7 @@ num:    .res 3                  ; number in/out (24-bit)
 scr:    .res 2                  ; editor: screen row
 tp:     .res 2                  ; editor: text pointer
 cnt:    .res 2
+obp:    .res 2                  ; TN: output mirror pointer
 cur:    .res 2                  ; editor: cursor, window top, text end
 top:    .res 2
 eend:   .res 2
@@ -108,6 +110,10 @@ hwbuf:  .res 128                ; h: write frame
 dcw:    .res 2+16+128           ; cp: destination directory (CWSIZE)
 hwlen:  .res 1
 xcmd:   .res 1
+cioerr: .res 1
+mirror: .res 1                  ; TN: 0 off, 1 command output, 2 prompt sink
+mbrun:  .res 1
+obn:    .res 2
 hpresent: .res 1              ; the board's h: answered at boot
 wdev:   .res 1
 wquiet: .res 1
@@ -222,6 +228,9 @@ start:  cld
         lda #>361
         sta cwd_dirs+1
         jsr screen_setup
+.ifdef TN
+        jsr mb_init
+.endif
         jsr iprint
         .byte "ASH 1.0 - the Atari SHell", EOL
         .byte "type 'help' for commands", EOL, 0
@@ -238,8 +247,14 @@ warm:   cld
 mainloop:
         ldx #$FF
         txs
+.ifdef TN
+        jsr mb_done
+        jsr mb_prompt
+.endif
         lda #0
         sta dc_valid            ; disks may be swapped between commands
+        sta err
+        sta cioerr
         lda #$FF
         sta BRKKEY
         jsr more_reset
@@ -247,8 +262,10 @@ mainloop:
         jsr readline
         lda len
         beq mainloop
+        lda mbrun               ; mailbox commands stay out of the history
+        bne :+
         jsr hist_add
-        jsr tokenize
+:       jsr tokenize
         lda argc
         beq mainloop
         jsr more_reset
@@ -413,7 +430,17 @@ crlf:   lda #EOL
 ; A = char, counted for the pager. Preserves A, X, Y.
 outc:   stx ox
         sty oy
-        jsr putc
+.ifdef TN
+        sta tmp
+        ldx mirror
+        beq @scr
+        jsr mb_out
+        lda mirror
+        cmp #2                  ; sink mode: no screen output at all
+        beq @r
+        lda tmp
+.endif
+@scr:   jsr putc
         cmp #EOL
         beq @nl
         inc mcol
@@ -426,6 +453,10 @@ outc:   stx ox
         ldx mlines
         cpx #23
         bcc @r
+.ifdef TN
+        ldx mbrun               ; the PC reads it all: never page
+        bne @r
+.endif
         pha
         jsr more_wait
         pla
@@ -463,6 +494,13 @@ more_wait:
         rts
 
 chk_break:                      ; BREAK during long output -> abort
+.ifdef TN
+        lda MB_ABORT            ; (or the PC's kill switch)
+        beq :+
+        lda #1
+        sta abort
+:
+.endif
         lda BRKKEY
         bne :+
         lda #$FF
@@ -682,7 +720,12 @@ readline:
         sta len
         lda #$FF
         sta hsel
-rl_key: jsr getkey
+rl_key:
+.ifdef TN
+        jsr mb_getkey
+.else
+        jsr getkey
+.endif
         cpy #128
         beq rl_brk
         cmp #EOL
@@ -2481,6 +2524,10 @@ launch: jsr close_all
         jsr crlf
         lda #1
         sta COLDST
+.ifdef TN
+        lda #3                  ; tell the PC the shell is gone
+        sta MB_STATUS
+.endif
         lda #<COLDSV
         sta DOSVEC
         lda #>COLDSV
@@ -2629,6 +2676,34 @@ cmd_history:
 cmd_reboot:
         jmp COLDSV
 
+; lp FILE — copy a file to the printer (P:) line by line
+cmd_lp: jsr open_arg1
+        bcs @r
+        lda #'P'
+        sta fnbuf
+        lda #':'
+        sta fnbuf+1
+        lda #EOL
+        sta fnbuf+2
+        lda #8
+        jsr c_open
+        bpl @l
+        jsr perr_cio
+        jmp stream_end
+@l:     jsr k_getbyte
+        bcs @done
+        cmp #$0A
+        bne :+
+        lda #EOL
+:       cmp #$0D
+        beq @l
+        jsr c_put
+        bpl @l
+        jsr perr_cio
+@done:  jsr c_close
+        jmp stream_end
+@r:     rts
+
 cmd_about:                      ; (not listed in help)
         jsr iprint
         .byte "(c) 2026 Carlos Bravo",EOL,"Made with ",0
@@ -2640,6 +2715,9 @@ cmd_about:                      ; (not listed in help)
 
         .include "fileops.s"
         .include "editor.s"
+.ifdef TN
+        .include "tn.s"
+.endif
 
 h_xio:  sta DAUX1               ; XIO A on namebuf
         lda #$58
@@ -2762,11 +2840,20 @@ cmdnames:
         .byte "clear",0,"cls",0,"help",0,"theme",0,"peek",0,"poke",0
         .byte "echo",0,"history",0,"reboot",0,"basic",0,"ver",0,"uname",0
         .byte "rm",0,"mv",0,"cp",0,"mkdir",0,"rmdir",0,"lock",0,"unlock",0
-        .byte "format",0,"edit",0,"about",0
+        .byte "format",0,"edit",0,"about",0,"lp",0
+.ifdef TN
+        .byte "pc",0,"getw",0
+.endif
         .byte 0
-.define CMDS cmd_ls,cmd_ls,cmd_cd,cmd_pwd,cmd_cat,cmd_cat,cmd_cat,cmd_xxd,cmd_xxd,cmd_file,cmd_run,cmd_df,cmd_df,cmd_clear,cmd_clear,cmd_help,cmd_theme,cmd_peek,cmd_poke,cmd_echo,cmd_history,cmd_reboot,cmd_basic,cmd_ver,cmd_ver,cmd_rm,cmd_mv,cmd_cp,cmd_mkdir,cmd_rm,cmd_lock,cmd_unlock,cmd_format,cmd_edit,cmd_about
+.define CMDS cmd_ls,cmd_ls,cmd_cd,cmd_pwd,cmd_cat,cmd_cat,cmd_cat,cmd_xxd,cmd_xxd,cmd_file,cmd_run,cmd_df,cmd_df,cmd_clear,cmd_clear,cmd_help,cmd_theme,cmd_peek,cmd_poke,cmd_echo,cmd_history,cmd_reboot,cmd_basic,cmd_ver,cmd_ver,cmd_rm,cmd_mv,cmd_cp,cmd_mkdir,cmd_rm,cmd_lock,cmd_unlock,cmd_format,cmd_edit,cmd_about,cmd_lp
+.ifdef TN
+.define CMDS_TN cmd_pc,cmd_getw
+cmdlo:  .lobytes CMDS, CMDS_TN
+cmdhi:  .hibytes CMDS, CMDS_TN
+.else
 cmdlo:  .lobytes CMDS
 cmdhi:  .hibytes CMDS
+.endif
 
 ciocodes: .byte 136,138,139,144,146,160,161,162,165,167,169,170,175,0
 ciolo:  .lobytes c_136,c_138,c_139,c_144,c_146,c_160,c_161,c_162,c_165,c_167,c_169,c_170,c_175
@@ -2816,6 +2903,10 @@ s_help:
         .byte "lock unlock      protect files",EOL
         .byte "format dn:       erase a disk (DOS 2)",EOL
         .byte "edit file        full-screen editor",EOL
+        .byte "lp file          print to P:",EOL
+.ifdef TN
+        .byte "pc               is ashterm on the pc?",EOL
+.endif
         .byte "history  clear  echo  basic  reboot",EOL
         .byte EOL
         .byte "tab completes names, arrows recall",EOL

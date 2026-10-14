@@ -584,6 +584,7 @@ usage:  lda #E_USAGE
 ; CIO status Y -> "<argv0>: <message>"
 perr_cio:
         sty tmp3
+        sty cioerr
         lda #0
         jsr getarg
         jsr puts_ap

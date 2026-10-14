@@ -59,10 +59,18 @@ class Disk:
         open(path or self.path, "wb").write(out)
 
 
+MB = 0x0640                      # ASH-TN mailbox (see tn.s)
+MB_CMDREQ, MB_STATUS, MB_LEN, MB_PING, MB_PONG, MB_CMD = 0x643, 0x644, 0x64B, 0x64E, 0x64F, 0x660
+MB_OUT, MB_RAM, MB_MORE = 0x647, 0x651, 0x653
+
+
 class Machine:
-    def __init__(self, drives, hdir=None, keys=b""):
+    def __init__(self, drives, hdir=None, keys=b"", mbcmds=None):
         self.mpu = MPU()
         self.m = self.mpu.memory
+        self.mbcmds = list(mbcmds or [])  # ASH-TN: commands to post via the mailbox
+        self.mbout = []                   # (command, output bytes) collected
+        self.nopong = False               # simulate "no PC program answering pings"
         self.disks = {u: Disk(p) for u, p in drives.items()}
         self.hdir = hdir
         self.hfiles = {}
@@ -152,7 +160,9 @@ class Machine:
             if cmd in (5, 7):
                 if not self.keys:
                     raise Stop("keys exhausted")
-                return self.rts(1, a=self.keys.pop(0))
+                k = self.keys.pop(0)
+                m[0x2FC] = 0 if self.keys else 0xFF      # CH: another key pending?
+                return self.rts(1, a=k)
             return self.rts(1)
         if cmd >= 14:                                  # XIO
             tab = dev
@@ -304,12 +314,42 @@ class Machine:
             return self.rts(144)
         return self.rts(139)
 
+    def mailbox(self):
+        """The PC side of the ASH-TN mailbox, in miniature: answer pings, post
+        the next command when ASH is idle, collect output; Stop when done."""
+        m = self.m
+        if m[MB_PING] != m[MB_PONG] and not self.nopong:
+            m[MB_PONG] = m[MB_PING]
+        if m[MB_CMDREQ] or m[MB_STATUS] == 0:
+            return
+        if self.mbout and self.mbout[-1][1] is None:      # previous command finished
+            out = self.w16(MB_OUT)
+            n = self.w16(MB_LEN)
+            self.mbout[-1] = (self.mbout[-1][0], bytes(m[out:out + n]), m[MB_STATUS], m[0x645])
+        if not self.mbcmds:
+            self.idle = getattr(self, "idle", 0) + 1
+            if self.idle > 800:                     # ~3 M instructions with nothing to do
+                raise Stop("mailbox idle")
+            return
+        self.idle = 0
+        c = self.mbcmds.pop(0).encode("latin1")
+        m[MB_CMD:MB_CMD + len(c) + 1] = c + b"\0"
+        self.mbout.append((c.decode("latin1"), None))
+        m[MB_CMDREQ] = 1
+
     def loop(self, until=None, steps=200_000_000):
         mpu = self.mpu
-        for _ in range(steps):
+        for i in range(steps):
             p = mpu.pc
             if p == until:
                 return
+            if i % 10000 == 0:                       # RTCLOK: ~1 jiffy per 10k instructions
+                m = self.m
+                m[0x14] = (m[0x14] + 1) & 0xFF
+                if m[0x14] == 0:
+                    m[0x13] = (m[0x13] + 1) & 0xFF
+            if not self.keys and i % 4096 == 0 and self.m[MB] == ord("A") and self.m[MB + 1] == ord("S"):
+                self.mailbox()
             if p == CIOV:
                 self.cio()
             elif p == SIOV:
@@ -348,8 +388,10 @@ class Machine:
 
 def build(a, keys):
     drives = {u: getattr(a, f"d{u}") for u in range(1, 5) if getattr(a, f"d{u}")}
-    mc = Machine(drives, a.hdir, keys)
+    mc = Machine(drives, a.hdir, keys, a.mb)
+    mc.nopong = a.no_pong
     m = mc.m
+    m[0x2FC] = 0 if keys else 0xFF
     if a.boot:
         d = mc.disks[1]
         m[0x0700:0x0800] = d.read(1) + d.read(2)
@@ -373,6 +415,8 @@ def main():
     ap.add_argument("--expect", help="xex whose segments must be in RAM at the run address")
     ap.add_argument("--save", action="store_true", help="write modified disks back")
     ap.add_argument("--esc", action="store_true", help=r"decode \xNN escapes in cmds (key codes)")
+    ap.add_argument("--mb", action="append", default=[], help="ASH-TN: post this command via the mailbox (after the keys)")
+    ap.add_argument("--no-pong", action="store_true", help="ASH-TN: never answer the shell's pings")
     ap.add_argument("cmds", nargs="*")
     a = ap.parse_args()
     cmds = [c.encode("latin1").decode("unicode_escape") for c in a.cmds] if a.esc else a.cmds
@@ -387,6 +431,9 @@ def main():
     except Stop as e:
         why = str(e)
     print(mc.screen())
+    for c, out, *st in mc.mbout:
+        print(f"--- mailbox: {c!r} -> status {st[0] if st else '?'} err {st[1] if st else '?'}")
+        print(out.decode("latin1").replace("\x9b", "\n") if out is not None else "(unfinished)")
     print(f"--- stop: {why}")
     if a.expect and why.startswith("reached"):
         bad = [s for s, d in mc.watch[1] if s not in (0x2E0, 0x2E2) and bytes(mc.m[s:s + len(d)]) != d]

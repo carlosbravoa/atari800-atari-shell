@@ -3,6 +3,15 @@ LD65   := $(HOME)/.local/bin/ld65
 
 all: build/ash.xex build/boot.bin
 
+# ASH-TN: the Tang Nano 20K build (PC-link mailbox, pc/getw commands)
+tn: build/ash-tn.xex build/boot.bin
+
+build/ash-tn.xex: ash.s kernel.s fileops.s editor.s tn.s ash.cfg
+	@mkdir -p build
+	$(CA65) -g -D TN=1 -l build/ash-tn.lst -o build/ash-tn.o ash.s
+	$(LD65) -C ash.cfg -Ln build/ash-tn.lbl -m build/ash-tn.map -o $@ build/ash-tn.o
+	@ls -l $@
+
 build/ash.xex: ash.s kernel.s fileops.s editor.s ash.cfg
 	@mkdir -p build
 	$(CA65) -g -l build/ash.lst -o build/ash.o ash.s
@@ -24,4 +33,4 @@ release: all
 clean:
 	rm -rf build
 
-.PHONY: all clean release
+.PHONY: all tn clean release

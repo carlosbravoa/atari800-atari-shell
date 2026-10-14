@@ -296,7 +296,16 @@ kx_init:
         jmp (INITAD)
 kx_eof: lda k_err
         bmi k_bad
-        lda RUNAD+1
+        lda k_dev               ; an h:/sd: stream: close the firmware handle
+        bne :+
+        lda #$43
+        jsr k_hcmd
+        lda #0
+        sta DSTATS
+        sta DBYTLO
+        sta DBYTHI
+        jsr SIOV
+:       lda RUNAD+1
         bne :+
         lda k_def
         sta RUNAD

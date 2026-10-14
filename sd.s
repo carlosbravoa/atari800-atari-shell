@@ -477,6 +477,8 @@ cmd_cart:
 .ifdef TN
         lda #3
         sta MB_STATUS
+        lda #0
+        sta MB_CMDREQ
 .endif
         rts
 @io:    lda #E_IO
@@ -495,6 +497,8 @@ cmd_reboot_tn:
 .ifdef TN
         lda #3
         sta MB_STATUS
+        lda #0
+        sta MB_CMDREQ
 .endif
         rts
 @os:    jmp COLDSV

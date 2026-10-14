@@ -2646,6 +2646,8 @@ launch: jsr close_all
 .ifdef TN
         lda #3                  ; tell the PC the shell is gone
         sta MB_STATUS
+        lda #0
+        sta MB_CMDREQ           ; (the request that launched us is served)
 .endif
         lda #<COLDSV
         sta DOSVEC

@@ -59,6 +59,8 @@ mb_init:
         sta MB_STATUS
         lda #0
         sta MB_CMDREQ
+        sta MB_ERR
+        sta MB_CIOERR
         sta MB_ABORT
         sta MB_PING
         sta MB_PONG

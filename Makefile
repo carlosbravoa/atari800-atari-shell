@@ -9,7 +9,7 @@ tn: build/ash-tn.xex build/boot.bin
 # ASH.CAR: ASH-TN in a Williams 32K cartridge (bank 0 = cart.s, banks 1-2 = the image)
 cart: build/ASH.CAR
 
-build/ash-cart.xex: ash.s kernel.s fileops.s editor.s tn.s ash-cart.cfg
+build/ash-cart.xex: ash.s kernel.s fileops.s editor.s tn.s sd.s ash-cart.cfg
 	@mkdir -p build
 	$(CA65) -g -D TN=1 -D CART=1 -l build/ash-cart.lst -o build/ash-cart.o ash.s
 	$(LD65) -C ash-cart.cfg -Ln build/ash-cart.lbl -m build/ash-cart.map -o $@ build/ash-cart.o
@@ -22,7 +22,7 @@ build/cart0.bin: cart.s cart.cfg
 build/ASH.CAR: build/ash-cart.xex build/cart0.bin tools/mkcar.py
 	python3 tools/mkcar.py -o $@ build/cart0.bin build/ash-cart.xex
 
-build/ash-tn.xex: ash.s kernel.s fileops.s editor.s tn.s ash.cfg
+build/ash-tn.xex: ash.s kernel.s fileops.s editor.s tn.s sd.s ash.cfg
 	@mkdir -p build
 	$(CA65) -g -D TN=1 -l build/ash-tn.lst -o build/ash-tn.o ash.s
 	$(LD65) -C ash.cfg -Ln build/ash-tn.lbl -m build/ash-tn.map -o $@ build/ash-tn.o

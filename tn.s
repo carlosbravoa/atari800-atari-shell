@@ -12,8 +12,8 @@
 ;   $0644 MB_STATUS 0 running, 1 done, 2 done with error, 3 program launched
 ;   $0645 MB_ERR    ASH error code (E_*), 0 = none
 ;   $0646 MB_CIOERR CIO status of the last D: error, 0 = none
-;   $0647 MB_OUTLO/HI  output buffer address      ($6A00)
-;   $0649 MB_CAPLO/HI  its size                   ($1600)
+;   $0647 MB_OUTLO/HI  output buffer address      ($7000)
+;   $0649 MB_CAPLO/HI  its size                   ($1000)
 ;   $064B MB_LENLO/HI  bytes of output so far (ASH updates as it prints)
 ;   $064D MB_SEQ    incremented when a command finishes
 ;   $064E MB_PING   ASH increments to ask "is the PC there?"
@@ -42,8 +42,8 @@ MB_RAM    = $0651
 MB_MORE   = $0653
 MB_CMD    = $0660
 MB_PROMPT = $06B0
-OBUF      = $6A00               ; command output mirror (TN: below the getw window)
-OBCAP     = $1600
+OBUF      = $7000               ; command output mirror (TN: below the getw window)
+OBCAP     = $1000
 RAMWIN    = $8000               ; getw window
 RAMWSIZE  = $4000
 CH        = $02FC

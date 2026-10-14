@@ -82,7 +82,10 @@ Note: `.BAS` files written by BASIC's `SAVE` are tokenized, not text —
 `ASH-TN.ATR`): the same shell plus a page-6 **mailbox** (`$0640`, see
 `tn.s`) through which the PC drives it over the board's PC link with no
 keystroke injection, plus two commands: `pc` (is the PC program there? — if
-not: *connect the board to the pc with the usb cable and run ashterm there*) and `getw` (used by `get`). On the PC:
+not: *connect the board to the pc with the usb cable and run ashterm there*) and `getw` (used by `get`). The PC side, `ashterm.py`, lives in the board repo
+(`tools/ashterm.py` in
+[atari800_tang_nano20k](https://github.com/carlosbravoa/atari800_tang_nano20k),
+next to `atari.py`), so one clone gives you the whole link:
 
 ```
 python3 tools/ashterm.py                 # terminal: ASH's own prompt, exact output, Ctrl-C aborts
@@ -95,6 +98,21 @@ a pager / the editor / a launched program. Protocol: the PC pokes a
 command line and sets `MB_CMDREQ`; ASH runs it (echoed on the TV, never
 paged), mirrors the output to `$6A00` with a running length, and reports
 status 1 (ok) / 2 (error, with the code) / 3 (a program was launched).
+
+### sd: — the whole SD card (needs the firmware's control XIOs)
+
+With a firmware that implements the H: control XIOs (`specs/ash-tn-proposal.md`
+in the parent repo, section 3), ASH-TN sees the card as `sd:`:
+
+```
+ls -l sd:/games            cd sd:/disks/dos           cat sd:/README.TXT
+run "sd:/games/Candy Crunch.xex"   (quotes keep the spaces of long names)
+cp sd:/games/x.xex d1:     mount                      mount d1: sd:/disks/x.atr
+umount d1:                 cart sd:/carts/x.car       reboot
+```
+`sd:` is read-only from the shell (read, mount, boot); `mount`, `cart` and
+`reboot` are acknowledged by the firmware and performed from its main loop a
+moment later. Without the XIOs these commands report an I/O error.
 
 ### ASH.CAR: the shell as a cartridge
 

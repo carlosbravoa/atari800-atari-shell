@@ -55,7 +55,7 @@ ICBLL   = $0348
 ICBLH   = $0349
 ICAX1   = $034A
 ICAX2   = $034B
-BASICLO = $6A00                 ; MEMLO for the `basic` command (above us)
+BASICLO = $7000                 ; MEMLO for the `basic` command (above us)
 
 EOL     = $9B
 MAXLEN  = 76                    ; input line (just under two screen rows)
@@ -101,9 +101,9 @@ argbuf: .res 80
 pathbuf:.res 80
 namebuf:.res 64                 ; H: name frame
 argv:   .res MAXARGS
-comp:   .res 16                 ; current path component (lowercase)
+comp:   .res 28                 ; current path component (lowercase; sd: names up to 27)
 nbuf:   .res 16                 ; formatted name "name.ext"
-cbuf:   .res 16                 ; tab-completion candidate
+cbuf:   .res 28                 ; tab-completion candidate / cp destination name
 hbuf:   .res 8
 fnbuf:  .res 96                 ; "Dn:/path/NAME" for CIO
 hwbuf:  .res 128                ; h: write frame
@@ -115,6 +115,10 @@ mirror: .res 1                  ; TN: 0 off, 1 command output, 2 prompt sink
 mbrun:  .res 1
 obn:    .res 2
 hpresent: .res 1              ; the board's h: answered at boot
+sdcwd:  .res 64                 ; TN: current sd: directory ("" = root)
+sdpath: .res 64                 ; TN: resolved sd: path
+lbuf:   .res 48                 ; TN: one listing line
+sdstart: .res 2
 wdev:   .res 1
 wquiet: .res 1
 ename:  .res 16                 ; editor state
@@ -681,7 +685,25 @@ print_path:
         lda #'h'
         jsr outc
         jmp @c
-@d:     lda #'d'
+@d:
+.ifdef TN
+        cmp #5
+        bne @dn
+        jsr iprint
+        .byte "sd:",0
+        ldx #0
+        lda sdcwd
+        bne :+
+        lda #'/'
+        jmp outc
+:       lda sdcwd,x
+        beq @e
+        jsr outc
+        inx
+        bne :-
+@dn:
+.endif
+        lda #'d'
         jsr outc
         lda cwd_drive
         ora #'0'
@@ -1039,30 +1061,57 @@ match_scan:
 @r:     rts
 
 ; ---- tokenizer & dispatch ---------------------------------------------------
-tokenize:
-        ldx #0
+tokenize:                       ; linebuf -> argv[]/argbuf (words, 0-terminated;
+        ldx #0                  ; "quoted words" keep their spaces)
         ldy #0
+        lda #0
+        sta tmp2                ; write index into argbuf
 @sk:    lda linebuf,x
         beq @d
         cmp #' '
         bne @w
-        lda #0
-        sta argbuf,x
         inx
         bne @sk
 @w:     cpy #MAXARGS
         bcs @d
-        txa
+        lda tmp2
         sta argv,y
         iny
+        lda #0
+        sta tmp                 ; inside quotes?
 @wl:    lda linebuf,x
-        beq @d
-        cmp #' '
-        beq @sk
-        sta argbuf,x
+        beq @end
+        cmp #'"'
+        bne :+
+        lda tmp
+        eor #1
+        sta tmp
         inx
         bne @wl
-@d:     lda #0
+:       cmp #' '
+        bne @st
+        lda tmp
+        beq @end
+        lda #' '
+@st:    stx sx
+        ldx tmp2
+        sta argbuf,x
+        inc tmp2
+        ldx sx
+        inx
+        bne @wl
+@end:   stx sx
+        ldx tmp2
+        lda #0
+        sta argbuf,x
+        inc tmp2
+        ldx sx
+        lda linebuf,x
+        beq @d
+        inx
+        bne @sk
+@d:     ldx tmp2
+        lda #0
         sta argbuf,x
         sty argc
         rts
@@ -1145,6 +1194,19 @@ resolve:
         lda (ap),y
         sta tmp2
         lda tmp
+.ifdef TN
+        cmp #'s'                ; "sd:..." -> the SD card
+        bne :+
+        lda tmp2
+        jsr tolower
+        cmp #'d'
+        bne :+
+        ldy #2
+        lda (ap),y
+        cmp #':'
+        beq @sd
+:       lda tmp
+.endif
         cmp #'h'
         bne @dd
         lda tmp2
@@ -1183,7 +1245,17 @@ resolve:
         lda #0
         sta t_depth
         beq @sl
-@nod:   ldy #0
+@nod:
+.ifdef TN
+        lda cwd_drive           ; relative names on sd: stay on sd:
+        cmp #5
+        bne :+
+@sd:    lda #5
+        sta t_drive
+        jmp sd_abs
+:
+.endif
+        ldy #0
 @sl:    lda (ap),y
         cmp #'/'
         bne @comp
@@ -1390,6 +1462,16 @@ is_exec:
 ; ---- directories ------------------------------------------------------------
 ; load the directory tcw names into dirtab (cached per command)
 tdir_load:
+.ifdef TN
+        lda t_drive
+        cmp #5
+        bne :+
+        lda #E_ROFS             ; no directory cache for sd: (read/mount/boot only)
+        sta err
+        sec
+        rts
+:
+.endif
         lda t_depth
         asl
         tax
@@ -1659,6 +1741,13 @@ open_file:
         bcs @r
         lda r_kind
         beq @isdir
+.ifdef TN
+        lda t_drive
+        cmp #5
+        bne :+
+        jmp sd_open
+:
+.endif
         jsr tdir_load
         bcs @r
         jsr lookup_comp
@@ -1864,7 +1953,19 @@ cmd_ls: lda #0
         lda lpath+1
         sta ap+1
 @rs:    jsr resolve
-        bcs @err
+        bcc :+
+        jmp @err
+:
+.ifdef TN
+        lda t_drive
+        cmp #5
+        bne :+
+        jsr sd_ls
+        bcc @r2
+        jmp @err
+@r2:    rts
+:
+.endif
         lda r_kind
         beq @dir
         jsr tdir_load
@@ -1923,6 +2024,15 @@ cmd_cd: lda argc
         jsr getarg
 cd_ap:  jsr resolve
         bcs @err
+.ifdef TN
+        lda t_drive
+        cmp #5
+        bne :+
+        jsr sd_cd
+        bcs @err
+        rts
+:
+.endif
         lda r_kind
         beq :+
         jsr descend
@@ -2685,7 +2795,11 @@ cmd_history:
 @d:     rts
 
 cmd_reboot:
+.ifdef TN
+        jmp cmd_reboot_tn
+.else
         jmp COLDSV
+.endif
 
 ; lp FILE — copy a file to the printer (P:) line by line
 cmd_lp: jsr open_arg1
@@ -2728,6 +2842,7 @@ cmd_about:                      ; (not listed in help)
         .include "editor.s"
 .ifdef TN
         .include "tn.s"
+        .include "sd.s"
 .endif
 
 h_xio:  sta DAUX1               ; XIO A on namebuf
@@ -2853,12 +2968,12 @@ cmdnames:
         .byte "rm",0,"mv",0,"cp",0,"mkdir",0,"rmdir",0,"lock",0,"unlock",0
         .byte "format",0,"edit",0,"about",0,"lp",0,"exit",0
 .ifdef TN
-        .byte "pc",0,"getw",0
+        .byte "pc",0,"getw",0,"mount",0,"umount",0,"cart",0
 .endif
         .byte 0
 .define CMDS cmd_ls,cmd_ls,cmd_cd,cmd_pwd,cmd_cat,cmd_cat,cmd_cat,cmd_xxd,cmd_xxd,cmd_file,cmd_run,cmd_df,cmd_df,cmd_clear,cmd_clear,cmd_help,cmd_theme,cmd_peek,cmd_poke,cmd_echo,cmd_history,cmd_reboot,cmd_basic,cmd_ver,cmd_ver,cmd_rm,cmd_mv,cmd_cp,cmd_mkdir,cmd_rm,cmd_lock,cmd_unlock,cmd_format,cmd_edit,cmd_about,cmd_lp,cmd_basic
 .ifdef TN
-.define CMDS_TN cmd_pc,cmd_getw
+.define CMDS_TN cmd_pc,cmd_getw,cmd_mount,cmd_umount,cmd_cart
 cmdlo:  .lobytes CMDS, CMDS_TN
 cmdhi:  .hibytes CMDS, CMDS_TN
 .else
@@ -2917,6 +3032,9 @@ s_help:
         .byte "lp file          print to P:",EOL
 .ifdef TN
         .byte "pc               is ashterm on the pc?",EOL
+        .byte "sd:/path         the sd card: ls cd cat run",EOL
+        .byte "mount [dn: path] show / mount a disk",EOL
+        .byte "umount dn:  cart path  reboot",EOL
 .endif
         .byte "history  clear  echo  reboot",EOL
         .byte "basic / exit     leave ASH for BASIC",EOL

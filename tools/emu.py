@@ -95,8 +95,11 @@ class Cart:
 
 
 class Machine:
-    def __init__(self, drives, hdir=None, keys=b"", mbcmds=None, cart=None):
+    def __init__(self, drives, hdir=None, keys=b"", mbcmds=None, cart=None, sdroot=None):
         self.cart = cart
+        self.sdroot = sdroot              # a host folder standing in for the SD card
+        self.fwreq = None                 # deferred firmware action (cart/boot/xex)
+        self.cartname = "-"
         if cart:
             self.mpu = MPU(memory=ObservableMemory())
             cart.attach(self.mpu.memory)
@@ -336,6 +339,8 @@ class Machine:
             if f and f[2]:
                 open(p(f[2]), "wb").write(f[0])
             return self.rts(1)
+        if cmd == 0x58 and aux1 >= 40:
+            return self.sdxio(aux1, h, buf)
         if cmd == 0x58:
             arg = bytes(m[buf:buf + 64]).split(b"\0")[0].decode().upper()
             if aux1 == 33 and os.path.exists(p(arg)):
@@ -372,12 +377,77 @@ class Machine:
         self.mbout.append((c.decode("latin1"), None))
         m[MB_CMDREQ] = 1
 
+    # -- the phase-2 control XIOs (specs/ash-tn-proposal.md, byte-level table)
+    def sdxio(self, fn, h, buf):
+        m = self.m
+        frame = bytes(m[buf:buf + 64])
+        path = frame.split(b"\0")[0].decode("latin1")
+        if self.sdroot is None:
+            return self.rts(144)
+        host = lambda p: os.path.join(self.sdroot, p.lstrip("/"))
+        if fn == 40:                                   # LIST
+            start = frame[62] | (frame[63] << 8)
+            if not os.path.isdir(host(path)):
+                return self.rts(144)
+            names = sorted(os.listdir(host(path)), key=str.lower)
+            lines, used = [], 0
+            for name in names[start:]:
+                full = host(os.path.join(path, name))
+                if os.path.isdir(full):
+                    line = f"d {'':8s} {name[:27]}"
+                else:
+                    line = f"f {os.path.getsize(full):8d} {name[:27]}"
+                if used + len(line) + 1 + 5 > 1024:
+                    lines.append("MORE")
+                    break
+                lines.append(line)
+                used += len(line) + 1
+            else:
+                lines.append("END")
+            self.hfiles[h] = [b"\x9b".join(l.encode("latin1") for l in lines) + b"\x9b", 0, None]
+            return self.rts(1)
+        if fn == 47:                                   # OPENR
+            if not os.path.isfile(host(path)):
+                return self.rts(144)
+            self.hfiles[h] = [open(host(path), "rb").read(), 0, None]
+            return self.rts(1)
+        if fn == 41:                                   # MOUNT "<n>path" (deferred)
+            n, p = path[0], path[1:]
+            if n not in "1234" or not os.path.isfile(host(p)):
+                return self.rts(144)
+            if p.lower().endswith(".xex"):
+                self.fwreq = f"firmware: mount_xex + cold_boot_xex {p}"
+            else:
+                self.disks[int(n)] = Disk(host(p))
+            return self.rts(1)
+        if fn == 42:                                   # UNMOUNT
+            if path[:1] not in "1234":
+                return self.rts(144)
+            self.disks.pop(int(path[0]), None)
+            return self.rts(1)
+        if fn == 43:                                   # CART (deferred)
+            if not os.path.isfile(host(path)):
+                return self.rts(144)
+            self.fwreq = f"firmware: load_cartridge + cold boot {path}"
+            return self.rts(1)
+        if fn == 44:                                   # BOOT (deferred)
+            self.fwreq = f"firmware: {'cold' if path[:1] == 'C' else 'warm'} boot"
+            return self.rts(1)
+        if fn == 45:                                   # STATUS listing
+            lines = [f"d{u}: {os.path.basename(self.disks[u].path) if u in self.disks else '-'}" for u in range(1, 5)]
+            lines += [f"cart: {self.cartname}", "xex: 0", "boot: ash", "END"]
+            self.hfiles[h] = [b"\x9b".join(l.encode("latin1") for l in lines) + b"\x9b", 0, None]
+            return self.rts(1)
+        return self.rts(144)
+
     def loop(self, until=None, steps=200_000_000):
         mpu = self.mpu
         for i in range(steps):
             p = mpu.pc
             if p == until:
                 return
+            if self.fwreq and i % 20000 == 0:        # the firmware's main loop acts on it
+                raise Stop(self.fwreq)
             if i % 10000 == 0:                       # RTCLOK: ~1 jiffy per 10k instructions
                 m = self.m
                 m[0x14] = (m[0x14] + 1) & 0xFF
@@ -424,7 +494,7 @@ class Machine:
 def build(a, keys):
     drives = {u: getattr(a, f"d{u}") for u in range(1, 5) if getattr(a, f"d{u}")}
     cart = Cart(a.cart) if a.cart else None
-    mc = Machine(drives, a.hdir, keys, a.mb, cart)
+    mc = Machine(drives, a.hdir, keys, a.mb, cart, a.sdroot)
     mc.nopong = a.no_pong
     m = mc.m
     m[0x2FC] = 0 if keys else 0xFF
@@ -450,6 +520,7 @@ def main():
     for u in range(1, 5):
         ap.add_argument(f"--d{u}")
     ap.add_argument("--hdir")
+    ap.add_argument("--sdroot", help="host folder served as the SD card through the phase-2 XIOs")
     ap.add_argument("--xex", default=os.path.join(os.path.dirname(__file__), "../build/ash.xex"))
     ap.add_argument("--boot", action="store_true", help="boot D1: through its boot sector")
     ap.add_argument("--cart", help="boot this ASH.CAR as the OS would (init vector, then run vector)")

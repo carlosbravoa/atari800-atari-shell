@@ -57,6 +57,12 @@ ICAX1   = $034A
 ICAX2   = $034B
 BASICLO = $7800                 ; MEMLO for the `basic` command (above us)
 
+.define VERSION "1.2"           ; one number for both editions (release tag v1.2.0)
+.ifdef TN
+.define EDITION " TN"
+.else
+.define EDITION ""
+.endif
 EOL     = $9B
 MAXLEN  = 76                    ; input line (just under two screen rows)
 MAXARGS = 8
@@ -243,7 +249,7 @@ start:  cld
         jsr mb_init
 .endif
         jsr iprint
-        .byte "ASH 1.0 - the Atari SHell", EOL
+        .byte "ASH ", VERSION, EDITION, " - the Atari SHell", EOL
         .byte "Type help for commands or basic to exit", EOL, 0
         jsr pick_drive
         jmp mainloop
@@ -2756,7 +2762,7 @@ cmd_help:
 
 cmd_ver:
         jsr iprint
-        .byte "ASH 1.0 (Atari SHell) 6502 XL/XE",EOL,0
+        .byte "ASH ", VERSION, EDITION, " (Atari SHell) 6502 XL/XE",EOL,0
         rts
 
 cmd_echo:

@@ -689,6 +689,8 @@ perr:   lda #0
         lda err
         cmp #E_IO
         bne :+
+        lda k_err
+        sta cioerr              ; (the PC side reads the code from the mailbox)
         lda #' '
         jsr outc
         lda k_err

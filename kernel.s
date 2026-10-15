@@ -174,6 +174,8 @@ k_refill:
         sta k_len
         lda k_dev
         beq @h
+        cmp #$FF
+        beq k_ramfill
         lda k_next
         ora k_next+1
         beq @end
@@ -226,6 +228,37 @@ k_refill:
         rts
 @bad:   lda #0
         sta k_len
+@end:   sec
+        rts
+
+; k_dev = $FF: the stream reads RAM at k_rptr, k_rrem bytes left (TN: text
+; the PC placed in the window). 128 bytes per refill.
+k_ramfill:
+        lda k_rrem
+        ora k_rrem+1
+        beq @end
+        ldy #0
+@c:     lda (k_rptr),y
+        sta sbuf,y
+        lda k_rrem
+        bne :+
+        dec k_rrem+1
+:       dec k_rrem
+        iny
+        cpy #128
+        bcs @full
+        lda k_rrem
+        ora k_rrem+1
+        bne @c
+@full:  sty k_len
+        tya                     ; k_rptr += bytes copied
+        clc
+        adc k_rptr
+        sta k_rptr
+        bcc :+
+        inc k_rptr+1
+:       clc
+        rts
 @end:   sec
         rts
 
@@ -1823,6 +1856,7 @@ k_cartreset:
 ; ---- kernel data (copied with the code) ----------------------------------------
 k_memlo:.word fms_end
 k_dev:  .res 1
+k_rrem: .res 2                  ; RAM stream: bytes left
 k_next: .res 2
 k_l16:  .res 1
 k_pos:  .res 1

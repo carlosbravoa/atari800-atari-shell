@@ -101,6 +101,7 @@ class Machine:
         self.fwreq = None                 # deferred firmware action (cart/boot/xex)
         self.cartname = "-"
         self.sdrw = False                 # phase 2b: the session write gate
+        self.web = None                   # phase 3: folder standing in for the internet (--web)
         self.protected = ["/atarixl.rom", "/basic.rom", "/atari.ini", "/ash.car"]
         if cart:
             self.mpu = MPU(memory=ObservableMemory())
@@ -373,6 +374,64 @@ class Machine:
             t = _t.localtime()
             m[0x655:0x65B] = bytes([t.tm_year - 2000, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec])
             m[0x654] = 0
+        if m[0x6D0] in (1, 2):                           # wget / listing request
+            self.netreq(m[0x6D0])
+
+    def netreq(self, req):
+        """ashterm's side of a URL request: --web DIR stands in for the net
+        (http(s)://host/path -> DIR/<last component>, tnfs://host/path -> DIR/tnfs/<path>)."""
+        m = self.m
+        url = bytes(m[0x8000:0x8100]).split(b"\0")[0].decode("latin1")
+        dst = bytes(m[0x8100:0x8180]).split(b"\0")[0].decode("latin1")
+        def finish(st, n=0, dest=0, name=""):
+            m[0x6D1] = st
+            m[0x6D2:0x6D5] = n.to_bytes(3, "little")
+            m[0x6D5] = dest
+            nb = name.encode("latin1")[:15] + b"\0"
+            m[0x6D6:0x6D6 + len(nb)] = nb
+            m[0x6D0] = 0
+        if self.web is None:
+            return finish(6)
+        low = url.lower()
+        if low.startswith("tnfs://"):
+            path = url[7:].split("/", 1)[1] if "/" in url[7:] else ""
+            host = os.path.join(self.web, "tnfs", path)
+        elif low.startswith(("http://", "https://")):
+            host = os.path.join(self.web, url.rsplit("/", 1)[-1].split("?")[0] or "index")
+        else:
+            return finish(6)
+        if req == 2:
+            if not os.path.isdir(host):
+                return finish(4 if os.path.exists(host) else 2)
+            lines = []
+            for name in sorted(os.listdir(host), key=str.lower):
+                full = os.path.join(host, name)
+                lines.append(f"d {'':8s} {name[:27]}" if os.path.isdir(full) else f"f {os.path.getsize(full):8d} {name[:27]}")
+            lines.append("END")
+            text = b"\x9b".join(l.encode("latin1") for l in lines) + b"\x9b"
+            m[0x8200:0x8200 + len(text)] = text
+            return finish(1, len(text), 2)
+        if os.path.isdir(host):
+            return finish(4)
+        if not os.path.isfile(host):
+            return finish(2)
+        data = open(host, "rb").read()
+        if len(data) > 4 * 1024 * 1024:
+            return finish(3)
+        if dst.lower().startswith("sd:"):
+            target = os.path.join(self.sdroot, dst[3:].lstrip("/"))
+            if dst[3:].lower() in self.protected or not os.path.isdir(os.path.dirname(target)):
+                return finish(5)
+            open(target, "wb").write(data)
+            return finish(1, len(data), 0)
+        if dst.lower().startswith("h:") and len(dst) > 2:
+            name = dst[2:].upper()
+        else:                                           # "h:", d<n>:NAME or "-": an 8.3 name from the URL
+            base = os.path.basename(host).upper()
+            stem, _, ext = base.partition(".")
+            name = "".join(c for c in stem if c.isalnum())[:8] + ("." + "".join(c for c in ext if c.isalnum())[:3] if ext else "")
+        open(os.path.join(self.hdir, name), "wb").write(data)
+        return finish(1, len(data), 1, name)
 
     def mailbox(self):
         """The PC side of the ASH-TN mailbox, in miniature: answer pings, post
@@ -560,6 +619,7 @@ def build(a, keys):
     cart = Cart(a.cart) if a.cart else None
     mc = Machine(drives, a.hdir, keys, a.mb, cart, a.sdroot)
     mc.nopong = a.no_pong
+    mc.web = a.web
     m = mc.m
     m[0x2FC] = 0 if keys else 0xFF
     if cart:
@@ -585,6 +645,7 @@ def main():
         ap.add_argument(f"--d{u}")
     ap.add_argument("--hdir")
     ap.add_argument("--sdroot", help="host folder served as the SD card through the phase-2 XIOs")
+    ap.add_argument("--web", help="host folder standing in for URLs (wget/tnfs requests)")
     ap.add_argument("--xex", default=os.path.join(os.path.dirname(__file__), "../build/ash.xex"))
     ap.add_argument("--boot", action="store_true", help="boot D1: through its boot sector")
     ap.add_argument("--cart", help="boot this ASH.CAR as the OS would (init vector, then run vector)")

@@ -82,6 +82,7 @@ E_NODEV = 10
 E_SDRO  = 11
 E_SDREF = 12
 E_LONG  = 13
+E_NET   = 14
 
 ; ---- zero page --------------------------------------------------------------
         .zeropage
@@ -95,6 +96,7 @@ scr:    .res 2                  ; editor: screen row
 tp:     .res 2                  ; editor: text pointer
 cnt:    .res 2
 obp:    .res 2                  ; TN: output mirror pointer
+k_rptr: .res 2                  ; kernel RAM stream pointer (k_dev = $FF)
 cur:    .res 2                  ; editor: cursor, window top, text end
 top:    .res 2
 eend:   .res 2
@@ -104,7 +106,7 @@ emsg:   .res 2
 ; ---- buffers -----------------------------------------------------------------
         .bss
 dirtab: .res MAXDIR*16          ; loaded directory: raw 16-byte DOS entries
-hist:   .res 8*80
+hist:   .res 8*78                ; MAXLEN+1 each
 linebuf:.res 80
 argbuf: .res 80
 pathbuf:.res 80
@@ -1982,7 +1984,16 @@ cmd_ls: lda #0
         sta ap
         lda lpath+1
         sta ap+1
-@rs:    jsr resolve
+@rs:
+.ifdef TN
+        jsr is_url
+        bcc :+
+        jsr net_ls
+        bcc @r2
+        jmp @err
+:
+.endif
+        jsr resolve
         bcc :+
         jmp @err
 :
@@ -2082,8 +2093,26 @@ cmd_pwd:
         jmp crlf
 
 cmd_cat:
+.ifdef TN
+        lda argc
+        cmp #2
+        bcc :+
+        lda #1
+        jsr getarg
+        jsr is_url
+        bcc :+
+        jsr net_fetch_h         ; a URL: fetch to /HDD, cat it, remove it
+        bcs cat_r
+        jsr open_file
+        bcs @e2
+        jsr cat_stream
+        jmp net_rm_tmp
+@e2:    jmp perr
+:
+.endif
         jsr open_arg1
-        bcs @r
+        bcs cat_r
+cat_stream:
 @l:     jsr k_getbyte
         bcs @e
         cmp #$0D
@@ -2106,7 +2135,7 @@ cmd_cat:
         jsr chk_break
         jmp @l
 @e:     jmp stream_end
-@r:     rts
+cat_r:  rts
 
 ; C=1 if A is a screen-editor control code (other than EOL)
 is_ctl: cmp #$1B
@@ -2568,6 +2597,22 @@ put_nbuf_colon:
 
 ; run FILE / bare names
 cmd_run:
+.ifdef TN
+        lda argc
+        cmp #2
+        bcc :+
+        lda #1
+        jsr getarg
+        jsr is_url
+        bcc :+
+        jsr net_fetch_h         ; a URL: fetch to /HDD, run from there
+        bcs @r
+        jsr open_file
+        bcs @e2
+        jmp launch_chk
+@e2:    jmp perr
+:
+.endif
         jsr open_arg1
         bcs @r
         jmp launch_chk
@@ -2577,6 +2622,18 @@ cmd_run:
 try_exec:
         lda #0
         jsr getarg
+.ifdef TN
+        jsr is_url
+        bcc :+
+        jsr net_fetch_h         ; "tnfs://host/game.xex" alone runs it
+        bcs @nr
+        jsr open_file
+        bcs @nr2
+        jmp launch_chk
+@nr2:   jmp perr
+@nr:    rts
+:
+.endif
         jsr open_file
         bcs :+
         jmp launch_chk
@@ -2875,6 +2932,7 @@ cmd_about:                      ; (not listed in help)
 .ifdef TN
         .include "tn.s"
         .include "sd.s"
+        .include "net.s"
 .endif
 
 h_xio:  sta DAUX1               ; XIO A on namebuf
@@ -2986,10 +3044,10 @@ themes: .byte $82,$0E,$82       ; deep blue (default)
 stockc: .byte $28,$CA,$94,$46,$00
 
 histlo: .repeat 8, I
-        .byte <(hist+I*80)
+        .byte <(hist+I*78)
         .endrepeat
 histhi: .repeat 8, I
-        .byte >(hist+I*80)
+        .byte >(hist+I*78)
         .endrepeat
 
 cmdnames:
@@ -3001,11 +3059,12 @@ cmdnames:
         .byte "format",0,"edit",0,"about",0,"lp",0,"exit",0
 .ifdef TN
         .byte "pc",0,"getw",0,"mount",0,"umount",0,"cart",0,"sd",0,"date",0
+        .byte "wget",0
 .endif
         .byte 0
 .define CMDS cmd_ls,cmd_ls,cmd_cd,cmd_pwd,cmd_cat,cmd_cat,cmd_cat,cmd_xxd,cmd_xxd,cmd_file,cmd_run,cmd_df,cmd_df,cmd_clear,cmd_clear,cmd_help,cmd_theme,cmd_peek,cmd_poke,cmd_echo,cmd_history,cmd_reboot,cmd_basic,cmd_ver,cmd_ver,cmd_rm,cmd_mv,cmd_cp,cmd_mkdir,cmd_rm,cmd_lock,cmd_unlock,cmd_format,cmd_edit,cmd_about,cmd_lp,cmd_basic
 .ifdef TN
-.define CMDS_TN cmd_pc,cmd_getw,cmd_mount,cmd_umount,cmd_cart,cmd_sd,cmd_date
+.define CMDS_TN cmd_pc,cmd_getw,cmd_mount,cmd_umount,cmd_cart,cmd_sd,cmd_date,cmd_wget
 cmdlo:  .lobytes CMDS, CMDS_TN
 cmdhi:  .hibytes CMDS, CMDS_TN
 .else
@@ -3029,8 +3088,8 @@ c_167:  .byte "locked, or directory not empty",0
 c_169:  .byte "directory full",0
 c_170:  .byte "no such file",0
 c_175:  .byte "not a DOS 2 disk (read-only)",0
-errlo:  .lobytes e_noent,e_notdir,e_io,e_isdir,e_noexec,e_deep,e_usage,e_num,e_rofs,e_nodev,e_sdro,e_sdref,e_long
-errhi:  .hibytes e_noent,e_notdir,e_io,e_isdir,e_noexec,e_deep,e_usage,e_num,e_rofs,e_nodev,e_sdro,e_sdref,e_long
+errlo:  .lobytes e_noent,e_notdir,e_io,e_isdir,e_noexec,e_deep,e_usage,e_num,e_rofs,e_nodev,e_sdro,e_sdref,e_long,e_net
+errhi:  .hibytes e_noent,e_notdir,e_io,e_isdir,e_noexec,e_deep,e_usage,e_num,e_rofs,e_nodev,e_sdro,e_sdref,e_long,e_net
 e_noent:  .byte "no such file or directory",0
 e_notdir: .byte "not a directory",0
 e_io:     .byte "i/o error",0
@@ -3044,6 +3103,7 @@ e_nodev:  .byte "no h: device on this machine",0
 e_sdro:   .byte "sd: is read-only - 'sd rw' enables it",0
 e_sdref:  .byte "refused (protected, in use, missing)",0
 e_long:   .byte "path too long",0
+e_net:    .byte "fetch failed",0
 
 s_help:
         .byte "ls [-l] [path]   list a directory",EOL
@@ -3072,6 +3132,8 @@ s_help:
         .byte "umount dn:  cart path  reboot",EOL
         .byte "sd rw            allow cp/rm/mv/mkdir on sd:",EOL
         .byte "date [sync]      the time, from the pc",EOL
+        .byte "wget url [dest]  fetch a file via the pc",EOL
+        .byte "ls/run/cat/cp    accept http(s):// tnfs://",EOL
 .endif
         .byte "history  clear  echo  reboot",EOL
         .byte "basic / exit     leave ASH for BASIC",EOL

@@ -1,7 +1,7 @@
 ; ===========================================================================
 ; cart.s — bank 0 of the ASH cartridge (Williams 32K, CAR type 22).
 ;
-; The cartridge carries the ASH-TN image (the .xex's $2000-$67FF segment) in
+; The cartridge carries the ASH-TN image (the .xex's $2000-$6BFF segment) in
 ; banks 1-3. Bank 0 is this: the OS runs our init vector at cold start, we
 ; park a copier in page 6 and the run vector jumps to it. The copier pages
 ; banks 1-2 in at $A000, moves them to $2000-$7FFF, switches the cartridge

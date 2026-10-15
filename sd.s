@@ -267,6 +267,19 @@ sd_ls:  lda #0
         jsr sd_xio
         bcs @nodir
         jsr sd_stream
+        jsr sd_list_lines
+        bcs @more
+        clc
+        rts
+@more:  jmp @page
+@nodir: lda #E_NOENT
+        sta err
+        sec
+        rts
+
+; print LIST lines from the current stream until END (C=0) or MORE (C=1,
+; sdstart counts the entries shown so far); closes the stream.
+sd_list_lines:
 @l:     jsr sd_line
         bcs @close
         lda lbuf
@@ -315,9 +328,6 @@ sd_ls:  lda #0
         clc
         rts
 @more:  jsr stream_end
-        jmp @page
-@nodir: lda #E_NOENT
-        sta err
         sec
         rts
 

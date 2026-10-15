@@ -289,8 +289,17 @@ cmd_format:
 ; cp SRC DST — any disk or h: to any disk or h:; DST may be a directory
 cmd_cp: lda argc
         cmp #3
-        beq cp_core
+        beq :+
         jmp usage
+:
+.ifdef TN
+        lda #1
+        jsr getarg
+        jsr is_url
+        bcc cp_core
+        jmp cmd_wget            ; cp URL dest = wget URL dest
+.endif
+        jmp cp_core
 
 ; C=1 if the copy failed (already reported)
 cp_core:

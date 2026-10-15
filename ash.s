@@ -3120,40 +3120,29 @@ e_net:    .byte "fetch failed",0
 
 s_help:
         .byte "ls [-l] [path]   list a directory",EOL
-        .byte "cd [path]        d1: h: .. / games/x",EOL
-        .byte "pwd              where am i",EOL
-        .byte "cat file         show a text file",EOL
-        .byte "xxd file         hex dump a file",EOL
+        .byte "cd path  pwd     change / show dir",EOL
+        .byte "cat xxd file     show text / hex dump",EOL
         .byte "file name        identify, xex segments",EOL
-        .byte "run file         load and run a .xex",EOL
-        .byte "name             runs name(.xex/.com)",EOL
-        .byte "df               drives and free space",EOL
-        .byte "peek adr [len]   dump memory (hex)",EOL
-        .byte "poke adr byte..  write memory (hex)",EOL
-        .byte "theme name       colours (theme = list)",EOL
-        .byte "cp src dst       copy (disks and h:)",EOL
+        .byte "run file, name   load and run a .xex",EOL
+        .byte "cp src dst       copy files",EOL
         .byte "rm mv            delete, rename / move",EOL
         .byte "mkdir rmdir      directories (MyDOS)",EOL
         .byte "lock unlock      protect files",EOL
         .byte "format dn:       erase a disk (DOS 2)",EOL
         .byte "edit file        full-screen editor",EOL
-        .byte "lp file          print to P:",EOL
-.ifdef TN
-        .byte "pc               is ashterm on the pc?",EOL
-        .byte "sd:/path         the sd card: ls cd cat run",EOL
-        .byte "mount [dn: path] show / mount a disk",EOL
-        .byte "umount dn:  cart path  reboot",EOL
-        .byte "sd rw            allow cp/rm/mv/mkdir on sd:",EOL
-        .byte "date [sync]      the time, from the pc",EOL
-        .byte "wget url [dest]  fetch a file via the pc",EOL
-        .byte "ls/run/cat/cp    accept http(s):// tnfs://",EOL
-.endif
-        .byte "history  clear  echo  reboot",EOL
+        .byte "df  lp file      drives / print to P:",EOL
+        .byte "peek poke adr    memory (hex)",EOL
         .byte "basic / exit     leave ASH for BASIC",EOL
-        .byte EOL
-        .byte "tab completes names, arrows recall",EOL
-        .byte "history, ctrl-u kills the line,",EOL
-        .byte "break cancels, reset comes back here",EOL
+        .byte "history clear echo theme ver reboot",EOL
+.ifdef TN
+        .byte "sd:/path         the sd card",EOL
+        .byte "mount umount     disks from sd:; cart",EOL
+        .byte "sd rw            allow writes to sd:",EOL
+        .byte "date [sync]      the time, from the pc",EOL
+        .byte "wget url [dest]  fetch via the pc",EOL
+        .byte "urls (http,tnfs) work with ls run cp",EOL
+.endif
+        .byte "tab completes, ctrl-up/dn: history",EOL
         .byte 0
 
         .include "kernel.s"

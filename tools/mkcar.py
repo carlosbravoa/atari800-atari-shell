@@ -3,8 +3,8 @@
 
   mkcar.py -o ASH.CAR build/cart0.bin build/ash-cart.xex
 
-Bank 0 = cart0.bin (8 KB: copier + vectors), banks 1-2 = the .xex's MAIN
-segment ($2000-$5FFF, zero-padded), bank 3 spare. 16-byte CAR header:
+Bank 0 = cart0.bin (8 KB: copier + vectors), banks 1-3 = the .xex's MAIN
+segment ($2000-$67FF, zero-padded). 16-byte CAR header:
 "CART", type (big-endian), checksum of the data (big-endian), 0.
 """
 import argparse
@@ -19,7 +19,7 @@ def xex_main(path):
     e = int.from_bytes(d[4:6], "little")
     assert s == 0x2000, f"image must load at $2000 (got ${s:04X})"
     body = d[6:6 + e - s + 1]
-    assert len(body) <= 2 * BANK, f"image {len(body)} bytes > 2 banks"
+    assert len(body) <= 3 * BANK, f"image {len(body)} bytes > 3 banks"
     return body
 
 
@@ -32,10 +32,10 @@ def main():
     b0 = open(a.bank0, "rb").read()
     assert len(b0) == BANK, f"bank 0 is {len(b0)} bytes"
     img = xex_main(a.xex)
-    data = b0 + img.ljust(2 * BANK, b"\0") + bytes(BANK)
+    data = b0 + img.ljust(3 * BANK, b"\0")
     hdr = b"CART" + (22).to_bytes(4, "big") + (sum(data) & 0xFFFFFFFF).to_bytes(4, "big") + bytes(4)
     open(a.o, "wb").write(hdr + data)
-    print(f"{a.o}: {len(hdr) + len(data)} bytes, image {len(img)} bytes in banks 1-2")
+    print(f"{a.o}: {len(hdr) + len(data)} bytes, image {len(img)} bytes in banks 1-3")
 
 
 if __name__ == "__main__":

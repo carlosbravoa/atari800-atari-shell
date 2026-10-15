@@ -51,6 +51,12 @@ sd_xio: sta DAUX1
 :       sec
         rts
 
+; a listing just opened on handle 1: make it the stream
+sd_stream:
+        lda #0
+        sta k_dev
+        jmp st_reset
+
 ; namebuf = sdpath (0-terminated), rest zero
 sd_frame:
         jsr h_name0
@@ -182,7 +188,7 @@ sd_abs: ldy #0
         sta sdpath+1
 :       clc
         rts
-@long:  lda #E_DEEP
+@long:  lda #E_LONG
         sta err
         sec
         rts
@@ -260,6 +266,7 @@ sd_ls:  lda #0
         lda #SD_LIST
         jsr sd_xio
         bcs @nodir
+        jsr sd_stream
 @l:     jsr sd_line
         bcs @close
         lda lbuf
@@ -320,6 +327,7 @@ sd_status:
         lda #SD_STATUS
         jsr sd_xio
         bcs @e
+        jsr sd_stream
 @l:     jsr sd_line
         bcs @d
         lda lbuf
@@ -502,3 +510,266 @@ cmd_reboot_tn:
 .endif
         rts
 @os:    jmp COLDSV
+
+; ===========================================================================
+; Phase 2b — writing to the card (session gate: `sd rw`)
+; ===========================================================================
+SD_WMODE  = 48
+SD_OPENW  = 49
+SD_DELETE = 50
+SD_RENAME = 51
+SD_MKDIR  = 52
+
+; XIO A on handle X (0 = the write handle, 1 = the stream). C=1 on error
+sd_xio_h:
+        pha
+        lda #$58
+        jsr k_hcmd
+        stx DAUX2
+        pla
+        sta DAUX1
+        lda #<namebuf
+        sta DBUFLO
+        lda #>namebuf
+        sta DBUFHI
+        lda #64
+        sta DBYTLO
+        lda #0
+        sta DBYTHI
+        lda #$80
+        sta DSTATS
+        lda #7
+        sta DTIMLO
+        jsr SIOV
+        sty k_err
+        tya
+        bmi :+
+        clc
+        rts
+:       sec
+        rts
+
+; the write gate must be open; else err = E_SDRO, C=1
+sd_need_rw:
+        lda sdrw
+        bne :+
+        lda #E_SDRO
+        sta err
+        sec
+        rts
+:       clc
+        rts
+
+; sd [rw|ro]
+cmd_sd: lda argc
+        cmp #2
+        bcs @set
+        jsr h_name0             ; query
+        lda #2
+        sta namebuf
+        lda #SD_WMODE
+        jsr sd_xio
+        bcc :+
+        jmp @io
+:       jsr sd_stream
+        jsr sd_line
+        bcs @d
+        lda lbuf
+        cmp #'r'
+        bne @d
+        lda lbuf+1
+        cmp #'w'
+        bne :+
+        lda #1
+        .byte $2C
+:       lda #0
+        sta sdrw
+        jsr iprint
+        .byte "sd: ",0
+        lda #<lbuf
+        ldy #>lbuf
+        jsr puts
+        jsr crlf
+@d:     jmp stream_end
+@set:   lda #1
+        jsr getarg
+        ldy #0
+        lda (ap),y
+        jsr tolower
+        cmp #'r'
+        bne @u
+        iny
+        lda (ap),y
+        jsr tolower
+        cmp #'w'
+        beq @rw
+        cmp #'o'
+        bne @u
+        lda #0
+        .byte $2C
+@rw:    lda #1
+        pha
+        jsr h_name0
+        pla
+        sta namebuf
+        sta sdrw
+        lda #SD_WMODE
+        jsr sd_xio
+        bcs @io
+        jsr iprint
+        .byte "sd: writes ",0
+        lda sdrw
+        beq :+
+        jsr iprint
+        .byte "enabled for this session",EOL,0
+        rts
+:       jsr iprint
+        .byte "disabled",EOL,0
+        rts
+@u:     jsr iprint
+        .byte "sd [rw|ro]",EOL,0
+        rts
+@io:    lda #E_IO
+        sta err
+        jmp perr
+
+; cp destination on sd: -> sddst; sdappend = 1 when the source's name is
+; to be appended (a directory was named)
+sd_dest:
+        lda #0
+        sta sdappend
+        lda r_kind
+        beq @dir
+        jsr sd_frame            ; an existing directory? (LIST succeeds)
+        lda #0
+        sta namebuf+62
+        sta namebuf+63
+        lda #SD_LIST
+        jsr sd_xio
+        bcs @file
+        jsr stream_end
+@dir:   lda #1
+        sta sdappend
+@file:  ldx #0
+:       lda sdpath,x
+        sta sddst,x
+        beq :+
+        inx
+        bne :-
+:       rts
+
+; after the source is open: finish sddst and open it for writing (handle 0)
+sd_wopen:
+        jsr sd_need_rw
+        bcs @r
+        lda sdappend
+        beq @open
+        ldx #0
+:       lda sddst,x
+        beq :+
+        inx
+        bne :-
+:       cpx #1                  ; "/" + name (root is "/", don't double it)
+        bne :+
+        ldx #0
+:       lda #'/'
+        sta sddst,x
+        inx
+        ldy #0
+:       lda nbuf,y
+        beq :+
+        cpx #SDPLEN
+        bcs @long
+        sta sddst,x
+        inx
+        iny
+        bne :-
+:       lda #0
+        sta sddst,x
+@open:  jsr h_name0
+        ldx #0
+:       lda sddst,x
+        sta namebuf,x
+        beq :+
+        inx
+        bne :-
+:       lda #SD_OPENW
+        ldx #0
+        jsr sd_xio_h
+        bcs @no
+        lda #0
+        sta hwlen
+        clc
+        rts
+@no:    lda #E_SDREF
+        sta err
+        sec
+@r:     rts
+@long:  lda #E_LONG
+        sta err
+        sec
+        rts
+
+; rm / rmdir of sdpath
+sd_rm:  jsr sd_need_rw
+        bcs @r
+        jsr sd_frame
+        lda #SD_DELETE
+        jsr sd_xio
+        bcs @no
+        clc
+        rts
+@no:    lda #E_SDREF
+        sta err
+        sec
+@r:     rts
+
+; mkdir sdpath
+sd_mkdir:
+        jsr sd_need_rw
+        bcs @r
+        jsr sd_frame
+        lda #SD_MKDIR
+        jsr sd_xio
+        bcs @no
+        clc
+        rts
+@no:    lda #E_SDREF
+        sta err
+        sec
+@r:     rts
+
+; mv on the card: sddst = new (already resolved), sdpath = old
+sd_rename:
+        jsr sd_need_rw
+        bcs @r
+        jsr h_name0
+        ldx #0
+:       lda sdpath,x
+        sta namebuf,x
+        beq :+
+        inx
+        bne :-
+:       inx                     ; past the 0
+        ldy #0
+:       lda sddst,y
+        sta namebuf,x
+        beq :+
+        inx
+        cpx #63
+        bcs @long
+        iny
+        bne :-
+:       lda #SD_RENAME
+        jsr sd_xio
+        bcs @no
+        clc
+        rts
+@no:    lda #E_SDREF
+        sta err
+        sec
+@r:     rts
+@long:  lda #E_LONG
+        sta err
+        sec
+        rts

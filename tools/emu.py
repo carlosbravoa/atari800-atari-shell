@@ -100,6 +100,8 @@ class Machine:
         self.sdroot = sdroot              # a host folder standing in for the SD card
         self.fwreq = None                 # deferred firmware action (cart/boot/xex)
         self.cartname = "-"
+        self.sdrw = False                 # phase 2b: the session write gate
+        self.protected = ["/atarixl.rom", "/basic.rom", "/atari.ini", "/ash.car"]
         if cart:
             self.mpu = MPU(memory=ObservableMemory())
             cart.attach(self.mpu.memory)
@@ -115,6 +117,8 @@ class Machine:
         self.keys = list(keys)
         self.out = bytearray()
         self.watch = None
+        self.arm_at = None                # --expect: only watch once the loader (k_exec) runs
+        self.armed = False
         self.iocb = {}                   # IOCB index -> 'E', 'K' or handler table address
         for a in (CIOV, SIOV, COLDSV):
             self.m[a] = 0x60
@@ -337,7 +341,10 @@ class Machine:
         if cmd == 0x43:
             f = self.hfiles.pop(h, None)
             if f and f[2]:
-                open(p(f[2]), "wb").write(f[0])
+                if isinstance(f[2], tuple):            # an sd: file (OPENW)
+                    open(os.path.join(self.sdroot, f[2][1].lstrip("/")), "wb").write(f[0])
+                else:
+                    open(p(f[2]), "wb").write(f[0])
             return self.rts(1)
         if cmd == 0x58 and aux1 >= 40:
             return self.sdxio(aux1, h, buf)
@@ -433,6 +440,48 @@ class Machine:
         if fn == 44:                                   # BOOT (deferred)
             self.fwreq = f"firmware: {'cold' if path[:1] == 'C' else 'warm'} boot"
             return self.rts(1)
+        if fn == 48:                                   # WRITEMODE
+            mode = frame[0]
+            if mode == 2:
+                self.hfiles[h] = [b"rw\x9bEND\x9b" if self.sdrw else b"ro\x9bEND\x9b", 0, None]
+                return self.rts(1)
+            self.sdrw = mode == 1
+            return self.rts(1)
+        if fn in (49, 50, 51, 52):
+            if not self.sdrw:
+                return self.rts(144)
+            guarded = set(self.protected) | {("/" + os.path.relpath(d.path, self.sdroot)).lower()
+                                               for d in self.disks.values() if d.path.startswith(self.sdroot)}
+            if fn == 51:
+                parts = frame.split(b"\0")
+                old, new = parts[0].decode("latin1"), parts[1].decode("latin1")
+                if old.lower() in guarded or not os.path.exists(host(old)) or os.path.exists(host(new)):
+                    return self.rts(144)
+                os.rename(host(old), host(new))
+                return self.rts(1)
+            if path.lower() in guarded:
+                return self.rts(144)
+            if fn == 49:                               # OPENW
+                if os.path.isdir(host(path)) or not os.path.isdir(os.path.dirname(host(path))):
+                    return self.rts(144)
+                self.hfiles[h] = [bytearray(), 0, ("sd", path)]
+                return self.rts(1)
+            if fn == 50:                               # DELETE
+                p = host(path)
+                if os.path.isdir(p):
+                    if os.listdir(p):
+                        return self.rts(144)
+                    os.rmdir(p)
+                    return self.rts(1)
+                if not os.path.isfile(p):
+                    return self.rts(144)
+                os.remove(p)
+                return self.rts(1)
+            if fn == 52:                               # MKDIR
+                if os.path.exists(host(path)):
+                    return self.rts(144)
+                os.mkdir(host(path))
+                return self.rts(1)
         if fn == 45:                                   # STATUS listing
             lines = [f"d{u}: {os.path.basename(self.disks[u].path) if u in self.disks else '-'}" for u in range(1, 5)]
             lines += [f"cart: {self.cartname}", "xex: 0", "boot: ash", "END"]
@@ -446,6 +495,8 @@ class Machine:
             p = mpu.pc
             if p == until:
                 return
+            if self.arm_at is not None and p == self.arm_at:
+                self.armed = True
             if self.fwreq and i % 20000 == 0:        # the firmware's main loop acts on it
                 raise Stop(self.fwreq)
             if i % 10000 == 0:                       # RTCLOK: ~1 jiffy per 10k instructions
@@ -461,7 +512,7 @@ class Machine:
                 self.sio()
             elif p == COLDSV:
                 raise Stop("COLDSV (load error / reboot)")
-            elif self.watch and p == self.watch[0]:
+            elif self.watch and p == self.watch[0] and (self.armed or self.arm_at is None):
                 raise Stop(f"reached run address ${p:04X}")
             else:
                 mpu.step()
@@ -526,6 +577,7 @@ def main():
     ap.add_argument("--cart", help="boot this ASH.CAR as the OS would (init vector, then run vector)")
     ap.add_argument("--reset", action="store_true", help="after the launched program starts, press RESET (JSR (DOSINI)) and report")
     ap.add_argument("--expect", help="xex whose segments must be in RAM at the run address")
+    ap.add_argument("--lbl", help="ld65 label file of the ASH build (arms --expect at k_exec; default: guessed from --xex/--cart)")
     ap.add_argument("--save", action="store_true", help="write modified disks back")
     ap.add_argument("--esc", action="store_true", help=r"decode \xNN escapes in cmds (key codes)")
     ap.add_argument("--mb", action="append", default=[], help="ASH-TN: post this command via the mailbox (after the keys)")
@@ -537,6 +589,13 @@ def main():
     mc, entry = build(a, keys)
     cart, m = mc.cart, mc.m
     if a.expect:
+        lbl = a.lbl or (os.path.join(os.path.dirname(__file__), "../build/ash-cart.lbl") if a.cart
+                        else os.path.splitext(a.xex)[0] + ".lbl")
+        if os.path.exists(lbl):
+            for line in open(lbl):
+                parts = line.split()
+                if len(parts) == 3 and parts[2] == ".k_exec":
+                    mc.arm_at = int(parts[1], 16)
         segs = mc.load_xex(a.expect)
         run = next((int.from_bytes(d, "little") for s, d in segs if s == 0x2E0), segs[0][0])
         mc.watch = (run, segs)

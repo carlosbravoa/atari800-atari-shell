@@ -55,7 +55,7 @@ ICBLL   = $0348
 ICBLH   = $0349
 ICAX1   = $034A
 ICAX2   = $034B
-BASICLO = $7000                 ; MEMLO for the `basic` command (above us)
+BASICLO = $7800                 ; MEMLO for the `basic` command (above us)
 
 EOL     = $9B
 MAXLEN  = 76                    ; input line (just under two screen rows)
@@ -73,6 +73,9 @@ E_USAGE = 7
 E_NUM   = 8
 E_ROFS  = 9
 E_NODEV = 10
+E_SDRO  = 11
+E_SDREF = 12
+E_LONG  = 13
 
 ; ---- zero page --------------------------------------------------------------
         .zeropage
@@ -119,6 +122,9 @@ sdcwd:  .res 64                 ; TN: current sd: directory ("" = root)
 sdpath: .res 64                 ; TN: resolved sd: path
 lbuf:   .res 48                 ; TN: one listing line
 sdstart: .res 2
+sddst:  .res 64                 ; TN: cp/mv destination on the card
+sdrw:   .res 1                  ; TN: the session write gate, as we last set it
+sdappend: .res 1
 wdev:   .res 1
 wquiet: .res 1
 ename:  .res 16                 ; editor state
@@ -225,6 +231,7 @@ start:  cld
         sta COLDST
         sta theme
         sta hpresent
+        sta sdrw
         sta hist_n
         sta hist_head
         lda #<361
@@ -2970,12 +2977,12 @@ cmdnames:
         .byte "rm",0,"mv",0,"cp",0,"mkdir",0,"rmdir",0,"lock",0,"unlock",0
         .byte "format",0,"edit",0,"about",0,"lp",0,"exit",0
 .ifdef TN
-        .byte "pc",0,"getw",0,"mount",0,"umount",0,"cart",0
+        .byte "pc",0,"getw",0,"mount",0,"umount",0,"cart",0,"sd",0
 .endif
         .byte 0
 .define CMDS cmd_ls,cmd_ls,cmd_cd,cmd_pwd,cmd_cat,cmd_cat,cmd_cat,cmd_xxd,cmd_xxd,cmd_file,cmd_run,cmd_df,cmd_df,cmd_clear,cmd_clear,cmd_help,cmd_theme,cmd_peek,cmd_poke,cmd_echo,cmd_history,cmd_reboot,cmd_basic,cmd_ver,cmd_ver,cmd_rm,cmd_mv,cmd_cp,cmd_mkdir,cmd_rm,cmd_lock,cmd_unlock,cmd_format,cmd_edit,cmd_about,cmd_lp,cmd_basic
 .ifdef TN
-.define CMDS_TN cmd_pc,cmd_getw,cmd_mount,cmd_umount,cmd_cart
+.define CMDS_TN cmd_pc,cmd_getw,cmd_mount,cmd_umount,cmd_cart,cmd_sd
 cmdlo:  .lobytes CMDS, CMDS_TN
 cmdhi:  .hibytes CMDS, CMDS_TN
 .else
@@ -2999,8 +3006,8 @@ c_167:  .byte "locked, or directory not empty",0
 c_169:  .byte "directory full",0
 c_170:  .byte "no such file",0
 c_175:  .byte "not a DOS 2 disk (read-only)",0
-errlo:  .lobytes e_noent,e_notdir,e_io,e_isdir,e_noexec,e_deep,e_usage,e_num,e_rofs,e_nodev
-errhi:  .hibytes e_noent,e_notdir,e_io,e_isdir,e_noexec,e_deep,e_usage,e_num,e_rofs,e_nodev
+errlo:  .lobytes e_noent,e_notdir,e_io,e_isdir,e_noexec,e_deep,e_usage,e_num,e_rofs,e_nodev,e_sdro,e_sdref,e_long
+errhi:  .hibytes e_noent,e_notdir,e_io,e_isdir,e_noexec,e_deep,e_usage,e_num,e_rofs,e_nodev,e_sdro,e_sdref,e_long
 e_noent:  .byte "no such file or directory",0
 e_notdir: .byte "not a directory",0
 e_io:     .byte "i/o error",0
@@ -3011,6 +3018,9 @@ e_usage:  .byte "missing operand",0
 e_num:    .byte "bad number",0
 e_rofs:   .byte "not supported here",0
 e_nodev:  .byte "no h: device on this machine",0
+e_sdro:   .byte "sd: is read-only - 'sd rw' enables it",0
+e_sdref:  .byte "refused (protected, in use, missing)",0
+e_long:   .byte "path too long",0
 
 s_help:
         .byte "ls [-l] [path]   list a directory",EOL
@@ -3037,6 +3047,7 @@ s_help:
         .byte "sd:/path         the sd card: ls cd cat run",EOL
         .byte "mount [dn: path] show / mount a disk",EOL
         .byte "umount dn:  cart path  reboot",EOL
+        .byte "sd rw            allow cp/rm/mv/mkdir on sd:",EOL
 .endif
         .byte "history  clear  echo  reboot",EOL
         .byte "basic / exit     leave ASH for BASIC",EOL

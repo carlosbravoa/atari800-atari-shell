@@ -26,7 +26,16 @@ cmd_rm: lda argc
         lda #33
         jsr h_xio
         jmp @n
-@d:     jsr mkfn
+@d:
+.ifdef TN
+        cmp #5
+        bne :+
+        jsr sd_rm
+        bcs @e
+        jmp @n
+:
+.endif
+        jsr mkfn
         lda #33
         jsr c_xio
         bpl @n
@@ -53,7 +62,34 @@ cmd_mv: lda argc
         beq @move
         iny
         bne @sc
-@move:  jsr cp_core
+@move:
+.ifdef TN
+        lda #2                  ; both on the card: a rename/move there
+        jsr getarg
+        jsr resolve
+        bcc :+
+        jmp @e
+:       lda t_drive
+        cmp #5
+        bne @cpmv
+        ldx #0
+:       lda sdpath,x
+        sta sddst,x
+        beq :+
+        inx
+        bne :-
+:       lda #1
+        jsr arg_name
+        bcs @e
+        lda t_drive
+        cmp #5
+        bne @cpmv
+        jsr sd_rename
+        bcs @e
+        rts
+@cpmv:
+.endif
+        jsr cp_core
         bcs @r
         lda #1
         jsr arg_name
@@ -64,7 +100,16 @@ cmd_mv: lda argc
         bcs @e
         lda #33
         jmp h_xio
-:       jsr mkfn
+:
+.ifdef TN
+        cmp #5
+        bne :+
+        jsr sd_rm
+        bcs @e
+        rts
+:
+.endif
+        jsr mkfn
         lda #33
         jsr c_xio
         bpl @r
@@ -147,7 +192,22 @@ cmd_unlock:
         lda #E_ROFS             ; h: is flat and has no locks
         sta err
 @e:     jmp perr
-:       jsr mkfn
+:
+.ifdef TN
+        cmp #5
+        bne :+
+        lda xcmd
+        cmp #42
+        bne @sdno
+        jsr sd_mkdir
+        bcs @e
+        rts
+@sdno:  lda #E_ROFS
+        sta err
+        jmp perr
+:
+.endif
+        jsr mkfn
         lda xcmd
         jsr c_xio
         bpl :+
@@ -240,6 +300,14 @@ cp_core:
         bcs cp_e1
         lda #0
         sta cbuf                ; cbuf = destination name ("" = source's)
+.ifdef TN
+        lda t_drive
+        cmp #5
+        bne :+
+        jsr sd_dest
+        jmp cpc_dir
+:
+.endif
         lda r_kind
         beq cpc_dir
         jsr tdir_load
@@ -336,6 +404,17 @@ w_open: lda #0
         sta hwlen
         lda t_drive
         sta wdev
+.ifdef TN
+        cmp #5
+        bne :+
+        jsr sd_wopen
+        bcc w_ok
+        lda wquiet
+        bne w_bad
+        jsr perr
+        jmp w_bad
+:
+.endif
         bne wo_d
         jsr h_name0             ; h: on firmware handle 0
         ldx #0
@@ -367,8 +446,10 @@ w_ok:   clc
         rts
 
 w_put:  ldx wdev
+        beq :+
+        cpx #5                  ; sd: writes go through the h: write handle
         bne @d
-        jsr hw_put
+:       jsr hw_put
         bcc w_ok
         bcs w_hio
 @d:     jsr c_put
@@ -376,8 +457,10 @@ w_put:  ldx wdev
 
 w_close:
         ldx wdev
+        beq :+
+        cpx #5
         bne @d
-        jsr hw_close
+:       jsr hw_close
         bcc w_ok
         bcs w_hio
 @d:     jsr c_close

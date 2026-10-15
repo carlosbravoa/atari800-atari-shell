@@ -1,10 +1,10 @@
 ; ===========================================================================
 ; cart.s — bank 0 of the ASH cartridge (Williams 32K, CAR type 22).
 ;
-; The cartridge carries the ASH-TN image (the .xex's $2000-$59FF segment) in
-; banks 1-2. Bank 0 is this: the OS runs our init vector at cold start, we
+; The cartridge carries the ASH-TN image (the .xex's $2000-$67FF segment) in
+; banks 1-3. Bank 0 is this: the OS runs our init vector at cold start, we
 ; park a copier in page 6 and the run vector jumps to it. The copier pages
-; banks 1-2 in at $A000, moves them to $2000-$5FFF, switches the cartridge
+; banks 1-2 in at $A000, moves them to $2000-$7FFF, switches the cartridge
 ; OFF (so $A000-$BFFF is RAM again, for games and for BASIC) and enters
 ; ASH. Williams 32K: a read of $D500+n selects bank n and enables the
 ; cart; a read of $D508 disables it. The cart logic is only reset when the
@@ -18,7 +18,7 @@
         .setcpu "6502"
 COPIER  = $0600
 IMGDST  = $2000
-NBANKS  = 2                     ; banks 1..2 hold the image
+NBANKS  = 3                     ; banks 1..3 hold the image ($2000-$7FFF)
 GINTLK  = $03FA
 NMIEN   = $D40E
 CARTSEL = $D500                 ; + bank number

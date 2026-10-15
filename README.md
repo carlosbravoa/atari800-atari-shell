@@ -65,8 +65,8 @@ their line-ending style: a Unix file stays Unix, new files use ATASCII.
 
 ## The D: device
 
-ASH installs a read/write `D:` handler (`$0700-$1BFF`, below DOS 2.5's
-MEMLO) that stays resident for BASIC and for launched programs: `OPEN`,
+ASH installs a read/write `D:` handler (`$0700-$1CFF`, the same area as DOS
+2.5) that stays resident for BASIC and for launched programs: `OPEN`,
 `LOAD`/`SAVE`, `LIST "D:X.LST"`, `ENTER`, XIO rename/delete/lock/unlock,
 `XIO 42` mkdir and `XIO 254` quick-format all work, with wildcards and
 `DIR>` / `DIR/` paths. Disks must be 720-sector DOS 2 format (SD or DD);
@@ -85,7 +85,11 @@ keystroke injection, plus two commands: `pc` (is the PC program there? — if
 not: *connect the board to the pc with the usb cable and run ashterm there*) and `getw` (used by `get`). The PC side, `ashterm.py`, lives in the board repo
 (`tools/ashterm.py` in
 [atari800_tang_nano20k](https://github.com/carlosbravoa/atari800_tang_nano20k),
-next to `atari.py`), so one clone gives you the whole link:
+next to `atari.py`), so one clone gives you the whole link. `ashterm`
+needs ASH-TN running on the Atari: the easiest way is `ASH.CAR` in the SD
+card's root with OSD → Options → Boot: ASH (or attach it as the cartridge).
+Leave it running interactively and it also serves the Atari's `date`,
+`wget` and URL requests:
 
 ```
 python3 tools/ashterm.py                 # terminal: ASH's own prompt, exact output, Ctrl-C aborts
@@ -110,7 +114,10 @@ run "sd:/games/Candy Crunch.xex"   (quotes keep the spaces of long names)
 cp sd:/games/x.xex d1:     mount                      mount d1: sd:/disks/x.atr
 umount d1:                 cart sd:/carts/x.car       reboot
 ```
-`sd:` is read-only from the shell (read, mount, boot); `mount`, `cart` and
+`sd:` is read-only by default; `sd rw` enables `cp`, `mv`, `rm`, `mkdir`
+and `rmdir` on it until the next cold boot (`sd ro` / `sd` to turn off /
+query). The firmware still refuses to delete or overwrite the ROMs,
+`atari.ini`, `ASH.CAR` and anything mounted. `mount`, `cart` and
 `reboot` are acknowledged by the firmware and performed from its main loop a
 moment later. Without the XIOs these commands report an I/O error.
 
@@ -140,10 +147,12 @@ shell, no disk needed; RESET after a game comes back to the prompt; the
 cartridge switches itself off once the shell is in RAM, so `$A000-$BFFF`
 is free for programs and `basic` / BASIC's `DOS` work as usual. Bank 0 is
 `cart.s` (a copier parked in page 6 by the init vector, GINTLK-safe
-switch-off), banks 1-2 carry the shell image, `k_cartreset` in the kernel
+switch-off), banks 1-3 carry the shell image, `k_cartreset` in the kernel
 is the RESET hook. Verified on the board: boot, launch, warm reset, BASIC
-round trip. Persistence across power cycles needs the firmware's `boot=`
-/ default-cartridge setting (see `specs/ash-tn-proposal.md`).
+round trip. To make it the machine's OS, put it in the SD card's root as
+`ASH.CAR` and set OSD → Options → Boot: ASH (the default stays BASIC; a
+missing or bad `ASH.CAR` falls back to BASIC). With a game cartridge
+attached, OSD → Cart → Detach returns to ASH.
 
 ## On a real Atari
 
@@ -155,9 +164,9 @@ Writable disks are 720-sector SD or DD; ED and big MyDOS disks are read-only.
 
 ## How it works
 
-- `$2000-$55FF` shell, `$5600-$65FF` buffers, `$6600+` editor text / BASIC.
+- `$2000-$6BFF` shell, `$6C00-$77FF` buffers, `$7800+` editor text / BASIC.
   BASIC is switched off (the `basic` command turns it back on).
-- The resident kernel at `$0700-$1BFF` streams files (DOS 2 / MyDOS sector
+- The resident kernel at `$0700-$1CFF` streams files (DOS 2 / MyDOS sector
   chains or `h:`), runs the XEX loader (INITAD / RUNAD, first-segment
   default) and holds the `D:` file manager with its buffers. That's inside
   DOS 2.5's own footprint, so anything that loads under DOS loads under

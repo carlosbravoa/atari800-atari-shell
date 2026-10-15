@@ -13,13 +13,13 @@
 ;   $0645 MB_ERR    ASH error code (E_*), 0 = none
 ;   $0646 MB_CIOERR CIO status of the last D: error, 0 = none
 ;   $0647 MB_OUTLO/HI  output buffer address      ($7800)
-;   $0649 MB_CAPLO/HI  its size                   ($0800)
+;   $0649 MB_CAPLO/HI  its size                   ($1800)
 ;   $064B MB_LENLO/HI  bytes of output so far (ASH updates as it prints)
 ;   $064D MB_SEQ    incremented when a command finishes
 ;   $064E MB_PING   ASH increments to ask "is the PC there?"
 ;   $064F MB_PONG   the PC copies MB_PING here
 ;   $0650 MB_ABORT  PC sets 1 to cancel the running command (like BREAK)
-;   $0651 MB_RAMLO/HI  getw: bytes in the RAM window ($8000, 16 KB)
+;   $0651 MB_RAMLO/HI  getw: bytes in the RAM window ($9000, 12 KB)
 ;   $0653 MB_MORE   getw: 1 = the file continues (call `getw` again)
 ;   $0660 MB_CMD    command line, 0-terminated, up to 111 chars ($0660-$06CF)
 ;   $06D0 MB_NET*   network request/result (net.s)
@@ -43,10 +43,10 @@ MB_RAM    = $0651
 MB_MORE   = $0653
 MB_CMD    = $0660
 MB_PROMPT = $06E8
-OBUF      = $7800               ; command output mirror (TN: below the getw window)
-OBCAP     = $0800
-RAMWIN    = $8000               ; getw window
-RAMWSIZE  = $4000
+OBUF      = $7800               ; command output mirror, $7800-$8FFF
+OBCAP     = $1800
+RAMWIN    = $9000               ; getw / URL window, $9000-$BFFF
+RAMWSIZE  = $3000
 CH        = $02FC
 
 ; power-on: announce ourselves, idle state
@@ -138,7 +138,11 @@ mb_getkey:
         sta BRKKEY
         ldy #128
         rts
-@mb:    jsr erase_line          ; anything half-typed goes
+@mb:    lda #0
+        sta MB_STATUS           ; running — before anything else is touched
+        sta MB_LEN
+        sta MB_LEN+1
+        jsr erase_line          ; anything half-typed goes
         ldx #0
 @cp:    lda MB_CMD,x
         beq @end
@@ -152,9 +156,6 @@ mb_getkey:
         lda #1
         sta mbrun
         lda #0
-        sta MB_STATUS           ; running
-        sta MB_LEN
-        sta MB_LEN+1
         sta MB_ABORT
         sta obn
         sta obn+1
@@ -199,19 +200,39 @@ mb_out: ldx mirror
         sta MB_LEN+1
 @r:     rts
 
+; ---- jiffy timer: jif_start, then jif_past (C=1 once A jiffies have passed)
+jif_start:
+        lda RTCLOK+2
+        sta jif0
+        lda RTCLOK+1
+        sta jif0+1
+        rts
+jif_past:
+        sta tmp3
+        lda RTCLOK+2
+        sec
+        sbc jif0
+        tax
+        lda RTCLOK+1
+        sbc jif0+1
+        bne @yes                ; ≥ 256 jiffies
+        cpx tmp3
+        bcs @yes
+        clc
+        rts
+@yes:   sec
+        rts
+
 ; ---- pc: is the PC program there? --------------------------------------------
 ; C=1 if the PC answered the ping within ~2 s (also prints nothing).
 pc_ping:
         inc MB_PING
-        lda RTCLOK+1
-        sta tmp3
+        jsr jif_start
 @w:     lda MB_PONG
         cmp MB_PING
         beq @yes
-        lda RTCLOK+1
-        sec
-        sbc tmp3
-        cmp #1                  ; 256 jiffies ≈ 4 s worst case, 2 s typical
+        lda #120
+        jsr jif_past
         bcc @w
         clc
         rts
@@ -289,14 +310,11 @@ cmd_date:
         bne @show
         lda #1
         sta MB_TIMEREQ
-        lda RTCLOK+1
-        sta tmp3
+        jsr jif_start
 @w:     lda MB_TIMEREQ
         beq @got
-        lda RTCLOK+1
-        sec
-        sbc tmp3
-        cmp #1                  ; ~2-4 s
+        lda #150
+        jsr jif_past
         bcc @w
         lda #0
         sta MB_TIMEREQ

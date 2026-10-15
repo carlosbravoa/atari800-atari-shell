@@ -138,6 +138,7 @@ sdappend: .res 1
 tbase:  .res 6                  ; TN: date — yy mm dd hh mm ss at the last fold
 tjif:   .res 3                  ; RTCLOK at that moment (hi, mid, lo)
 tsynced: .res 1
+jif0:   .res 2                  ; TN: jiffy timer start
 wdev:   .res 1
 wquiet: .res 1
 ename:  .res 16                 ; editor state

@@ -381,8 +381,8 @@ class Machine:
         """ashterm's side of a URL request: --web DIR stands in for the net
         (http(s)://host/path -> DIR/<last component>, tnfs://host/path -> DIR/tnfs/<path>)."""
         m = self.m
-        url = bytes(m[0x8000:0x8100]).split(b"\0")[0].decode("latin1")
-        dst = bytes(m[0x8100:0x8180]).split(b"\0")[0].decode("latin1")
+        url = bytes(m[0x9000:0x9100]).split(b"\0")[0].decode("latin1")
+        dst = bytes(m[0x9100:0x9180]).split(b"\0")[0].decode("latin1")
         def finish(st, n=0, dest=0, name=""):
             m[0x6D1] = st
             m[0x6D2:0x6D5] = n.to_bytes(3, "little")
@@ -409,7 +409,7 @@ class Machine:
                 lines.append(f"d {'':8s} {name[:27]}" if os.path.isdir(full) else f"f {os.path.getsize(full):8d} {name[:27]}")
             lines.append("END")
             text = b"\x9b".join(l.encode("latin1") for l in lines) + b"\x9b"
-            m[0x8200:0x8200 + len(text)] = text
+            m[0x9200:0x9200 + len(text)] = text
             return finish(1, len(text), 2)
         if os.path.isdir(host):
             return finish(4)

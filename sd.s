@@ -467,12 +467,9 @@ drive_arg:
 
 ; give the firmware's main loop a moment for a deferred action
 sd_settle:
-        lda RTCLOK+2
-        sta tmp3
-:       lda RTCLOK+2
-        sec
-        sbc tmp3
-        cmp #30
+        jsr jif_start
+:       lda #30
+        jsr jif_past
         bcc :-
         rts
 

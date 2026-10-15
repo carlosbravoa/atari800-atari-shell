@@ -11,9 +11,9 @@ MB_NETST   = $06D1
 MB_NETLEN  = $06D2
 MB_NETDEST = $06D5
 MB_NETNAME = $06D6
-NET_URL    = $8000
-NET_DST    = $8100
-NET_TEXT   = $8200
+NET_URL    = $9000
+NET_DST    = $9100
+NET_TEXT   = $9200
 
 ; C=1 if (ap) starts with http://, https:// or tnfs://
 is_url: ldy #0

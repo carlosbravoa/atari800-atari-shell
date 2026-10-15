@@ -272,3 +272,157 @@ cmd_getw:
         jsr iprint
         .byte " bytes in window",EOL,0
 @r:     rts
+
+; ---- date [sync]: the PC's clock, then RTCLOK keeps it running ------------------
+MB_TIMEREQ = $0654
+MB_TIME    = $0655              ; yy mm dd hh mm ss (binary, local, yy = year-2000)
+
+cmd_date:
+        lda argc
+        cmp #2
+        bcc :+
+        lda #0                  ; any argument ("sync"): ask again
+        sta tsynced
+:       lda tsynced
+        bne @show
+        lda #1
+        sta MB_TIMEREQ
+        lda RTCLOK+1
+        sta tmp3
+@w:     lda MB_TIMEREQ
+        beq @got
+        lda RTCLOK+1
+        sec
+        sbc tmp3
+        cmp #1                  ; ~2-4 s
+        bcc @w
+        lda #0
+        sta MB_TIMEREQ
+        jmp pc_fail
+@got:   ldx #5
+:       lda MB_TIME,x
+        sta tbase,x
+        dex
+        bpl :-
+        lda RTCLOK
+        sta tjif
+        lda RTCLOK+1
+        sta tjif+1
+        lda RTCLOK+2
+        sta tjif+2
+        lda #1
+        sta tsynced
+@show:  jsr t_advance
+        jsr iprint
+        .byte "20",0
+        lda tbase
+        jsr t_2d
+        lda #'-'
+        jsr outc
+        lda tbase+1
+        jsr t_2d
+        lda #'-'
+        jsr outc
+        lda tbase+2
+        jsr t_2d
+        lda #' '
+        jsr outc
+        lda tbase+3
+        jsr t_2d
+        lda #':'
+        jsr outc
+        lda tbase+4
+        jsr t_2d
+        lda #':'
+        jsr outc
+        lda tbase+5
+        jsr t_2d
+        jmp crlf
+
+t_2d:   cmp #10                 ; two decimal digits, zero-padded
+        bcs :+
+        pha
+        lda #'0'
+        jsr outc
+        pla
+:       jsr num8
+        jmp pdec0
+
+; fold the jiffies since the sync into tbase, 60 at a time (NTSC)
+t_advance:
+@l:     lda RTCLOK+2            ; elapsed = RTCLOK - tjif (24-bit, hi..lo = $12..$14)
+        sec
+        sbc tjif+2
+        sta cnt
+        lda RTCLOK+1
+        sbc tjif+1
+        sta cnt+1
+        lda RTCLOK
+        sbc tjif
+        bne @tick               ; ≥ 65536 jiffies: certainly ≥ 60
+        lda cnt+1
+        bne @tick
+        lda cnt
+        cmp #60
+        bcs @tick
+        rts
+@tick:  lda tjif+2              ; tjif += 60
+        clc
+        adc #60
+        sta tjif+2
+        bcc :+
+        inc tjif+1
+        bne :+
+        inc tjif
+:       inc tbase+5             ; seconds
+        lda tbase+5
+        cmp #60
+        bcs :+
+        jmp @l
+:
+        lda #0
+        sta tbase+5
+        inc tbase+4
+        lda tbase+4
+        cmp #60
+        bcs :+
+        jmp @l
+:
+        lda #0
+        sta tbase+4
+        inc tbase+3
+        lda tbase+3
+        cmp #24
+        bcs :+
+        jmp @l
+:
+        lda #0
+        sta tbase+3
+        inc tbase+2             ; day
+        ldx tbase+1             ; days in this month (Feb 29 in leap years)
+        lda mdays-1,x
+        cpx #2
+        bne :+
+        ldy tbase
+        tya
+        and #3
+        bne :+
+        lda #29
+:       cmp tbase+2
+        bcc :+
+        jmp @l
+:
+        lda #1
+        sta tbase+2
+        inc tbase+1
+        lda tbase+1
+        cmp #13
+        bcs :+
+        jmp @l
+:
+        lda #1
+        sta tbase+1
+        inc tbase
+        jmp @l
+
+mdays:  .byte 31,28,31,30,31,30,31,31,30,31,30,31

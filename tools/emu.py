@@ -361,12 +361,23 @@ class Machine:
             return self.rts(144)
         return self.rts(139)
 
+    def mailbox_poll(self):
+        """What ashterm answers whenever it looks at the mailbox: pings and time."""
+        m = self.m
+        if self.nopong:
+            return
+        if m[MB_PING] != m[MB_PONG]:
+            m[MB_PONG] = m[MB_PING]
+        if m[0x654] == 1:                                # date: the PC's clock
+            import time as _t
+            t = _t.localtime()
+            m[0x655:0x65B] = bytes([t.tm_year - 2000, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec])
+            m[0x654] = 0
+
     def mailbox(self):
         """The PC side of the ASH-TN mailbox, in miniature: answer pings, post
         the next command when ASH is idle, collect output; Stop when done."""
         m = self.m
-        if m[MB_PING] != m[MB_PONG] and not self.nopong:
-            m[MB_PONG] = m[MB_PING]
         if m[MB_CMDREQ] or m[MB_STATUS] == 0:
             return
         if self.mbout and self.mbout[-1][1] is None:      # previous command finished
@@ -504,8 +515,10 @@ class Machine:
                 m[0x14] = (m[0x14] + 1) & 0xFF
                 if m[0x14] == 0:
                     m[0x13] = (m[0x13] + 1) & 0xFF
-            if not self.keys and i % 4096 == 0 and self.m[MB] == ord("A") and self.m[MB + 1] == ord("S"):
-                self.mailbox()
+            if i % 4096 == 0 and self.m[MB] == ord("A") and self.m[MB + 1] == ord("S"):
+                self.mailbox_poll()
+                if not self.keys:
+                    self.mailbox()
             if p == CIOV:
                 self.cio()
             elif p == SIOV:

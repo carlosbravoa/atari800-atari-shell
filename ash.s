@@ -132,6 +132,9 @@ sdstart: .res 2
 sddst:  .res 64                 ; TN: cp/mv destination on the card
 sdrw:   .res 1                  ; TN: the session write gate, as we last set it
 sdappend: .res 1
+tbase:  .res 6                  ; TN: date — yy mm dd hh mm ss at the last fold
+tjif:   .res 3                  ; RTCLOK at that moment (hi, mid, lo)
+tsynced: .res 1
 wdev:   .res 1
 wquiet: .res 1
 ename:  .res 16                 ; editor state
@@ -239,6 +242,7 @@ start:  cld
         sta theme
         sta hpresent
         sta sdrw
+        sta tsynced
         sta pinv
         sta hist_n
         sta hist_head
@@ -463,8 +467,10 @@ outc:   stx ox
         beq :+
         ora #$80                ; inverse (prompt badge)
 :       jsr putc
-        and #$7F
-        cmp #EOL
+        ldx pinv
+        beq :+
+        and #$7F                ; (the counters want the plain code)
+:       cmp #EOL
         beq @nl
         inc mcol
         ldx mcol
@@ -2994,12 +3000,12 @@ cmdnames:
         .byte "rm",0,"mv",0,"cp",0,"mkdir",0,"rmdir",0,"lock",0,"unlock",0
         .byte "format",0,"edit",0,"about",0,"lp",0,"exit",0
 .ifdef TN
-        .byte "pc",0,"getw",0,"mount",0,"umount",0,"cart",0,"sd",0
+        .byte "pc",0,"getw",0,"mount",0,"umount",0,"cart",0,"sd",0,"date",0
 .endif
         .byte 0
 .define CMDS cmd_ls,cmd_ls,cmd_cd,cmd_pwd,cmd_cat,cmd_cat,cmd_cat,cmd_xxd,cmd_xxd,cmd_file,cmd_run,cmd_df,cmd_df,cmd_clear,cmd_clear,cmd_help,cmd_theme,cmd_peek,cmd_poke,cmd_echo,cmd_history,cmd_reboot,cmd_basic,cmd_ver,cmd_ver,cmd_rm,cmd_mv,cmd_cp,cmd_mkdir,cmd_rm,cmd_lock,cmd_unlock,cmd_format,cmd_edit,cmd_about,cmd_lp,cmd_basic
 .ifdef TN
-.define CMDS_TN cmd_pc,cmd_getw,cmd_mount,cmd_umount,cmd_cart,cmd_sd
+.define CMDS_TN cmd_pc,cmd_getw,cmd_mount,cmd_umount,cmd_cart,cmd_sd,cmd_date
 cmdlo:  .lobytes CMDS, CMDS_TN
 cmdhi:  .hibytes CMDS, CMDS_TN
 .else
@@ -3065,6 +3071,7 @@ s_help:
         .byte "mount [dn: path] show / mount a disk",EOL
         .byte "umount dn:  cart path  reboot",EOL
         .byte "sd rw            allow cp/rm/mv/mkdir on sd:",EOL
+        .byte "date [sync]      the time, from the pc",EOL
 .endif
         .byte "history  clear  echo  reboot",EOL
         .byte "basic / exit     leave ASH for BASIC",EOL

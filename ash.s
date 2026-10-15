@@ -121,6 +121,7 @@ hwlen:  .res 1
 xcmd:   .res 1
 cioerr: .res 1
 mirror: .res 1                  ; TN: 0 off, 1 command output, 2 prompt sink
+pinv:   .res 1                  ; printing the prompt badge (inverse video)
 mbrun:  .res 1
 obn:    .res 2
 hpresent: .res 1              ; the board's h: answered at boot
@@ -238,6 +239,7 @@ start:  cld
         sta theme
         sta hpresent
         sta sdrw
+        sta pinv
         sta hist_n
         sta hist_head
         lda #<361
@@ -457,7 +459,11 @@ outc:   stx ox
         beq @r
         lda tmp
 .endif
-@scr:   jsr putc
+@scr:   ldx pinv
+        beq :+
+        ora #$80                ; inverse (prompt badge)
+:       jsr putc
+        and #$7F
         cmp #EOL
         beq @nl
         inc mcol
@@ -687,15 +693,20 @@ num8:   sta num
         rts
 
 ; ---- prompt & line editor ---------------------------------------------------
-prompt: jsr print_path
-        jsr iprint
-        .byte "$ ",0
-        rts
+prompt: lda #1                  ; the prompt is an inverse-video badge, so
+        sta pinv                ; command lines stand out from output
+        jsr print_path
+        lda #'$'
+        jsr outc
+        lda #0
+        sta pinv
+        lda #' '
+        jmp outc
 
 print_path:
         lda cwd_drive
         bne @d
-        lda #'h'
+        lda #'H'
         jsr outc
         jmp @c
 @d:
@@ -703,7 +714,7 @@ print_path:
         cmp #5
         bne @dn
         jsr iprint
-        .byte "sd:",0
+        .byte "SD:",0
         ldx #0
         lda sdcwd
         bne :+
@@ -716,7 +727,7 @@ print_path:
         bne :-
 @dn:
 .endif
-        lda #'d'
+        lda #'D'
         jsr outc
         lda cwd_drive
         ora #'0'
@@ -2686,7 +2697,7 @@ cmd_df: ldx #1
 @l:     stx df_d
         jsr dstat
         bcs @nx
-        lda #'d'
+        lda #'D'
         jsr outc
         lda df_d
         ora #'0'
@@ -2740,7 +2751,7 @@ cmd_df: ldx #1
         jsr h_dir
         bcs @r
         jsr iprint
-        .byte "h:  sd card /HDD,",0
+        .byte "H:  sd card /HDD,",0
         lda ndir
         jsr num8
         lda #4

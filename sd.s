@@ -281,12 +281,17 @@ sd_ls:  lda #0
 ; sdstart counts the entries shown so far); closes the stream.
 sd_list_lines:
 @l:     jsr sd_line
-        bcs @close
+        bcc :+
+        jmp @cut                ; the stream ended before END/MORE: a lost frame
+:
         lda lbuf
         cmp #'E'                ; END
-        beq @close
-        cmp #'M'                ; MORE: ask again from where we are
-        beq @more
+        bne :+
+        jmp @close
+:       cmp #'M'                ; MORE: ask again from where we are
+        bne :+
+        jmp @more
+:
         inc sdstart
         bne :+
         inc sdstart+1
@@ -327,6 +332,11 @@ sd_list_lines:
 @close: jsr stream_end
         clc
         rts
+@cut:   lda abort
+        bne @close
+        jsr iprint
+        .byte "(listing cut - please retry)",EOL,0
+        jmp @close
 @more:  jsr stream_end
         sec
         rts

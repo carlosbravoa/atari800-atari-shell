@@ -114,6 +114,24 @@ umount d1:                 cart sd:/carts/x.car       reboot
 `reboot` are acknowledged by the firmware and performed from its main loop a
 moment later. Without the XIOs these commands report an I/O error.
 
+### Network through the PC (`ashterm` running on the PC)
+
+With `ashterm` connected, the shell can reach the internet via the PC: `date`
+(the PC's clock, then kept by the Atari), `wget URL [dest|-]`, and `ls`,
+`cat`, `run`, `cp` accept `http(s)://` and `tnfs://host/path` URLs, so a
+FujiNet TNFS server browses like a disk and its programs run directly:
+
+```
+date                                  ls tnfs://tnfs.fujinet.online/ATARI
+wget https://example.org/game.xex     run tnfs://tnfs.fujinet.online/ATARI/_lobby.xex
+cp tnfs://host/games/x.atr sd:/disks/  (sd: needs `sd rw`)
+```
+The Atari never talks to the network: it posts a request in the mailbox,
+`ashterm` fetches on the PC and delivers the file through the board's file
+transfer (to the card, or into `/HDD` for the shell to copy on). Without a
+PC: *no answer from the pc…*. Command lines are up to 111 characters, for
+URLs.
+
 ### ASH.CAR: the shell as a cartridge
 
 `make cart` packs ASH-TN into a Williams 32K cartridge image (`release/

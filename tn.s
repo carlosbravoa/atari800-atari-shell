@@ -7,7 +7,7 @@
 ; typed and mirrors every byte of output into a RAM buffer the PC peeks.
 ;
 ;   $0640 MB_MAGIC  "AS" — ASH-TN is running
-;   $0642 MB_VER    mailbox protocol version (1)
+;   $0642 MB_VER    mailbox protocol version (2: 111-char commands, prompt at $06E8)
 ;   $0643 MB_CMDREQ PC sets 1 after writing MB_CMD; ASH clears it when done
 ;   $0644 MB_STATUS 0 running, 1 done, 2 done with error, 3 program launched
 ;   $0645 MB_ERR    ASH error code (E_*), 0 = none
@@ -21,8 +21,9 @@
 ;   $0650 MB_ABORT  PC sets 1 to cancel the running command (like BREAK)
 ;   $0651 MB_RAMLO/HI  getw: bytes in the RAM window ($8000, 16 KB)
 ;   $0653 MB_MORE   getw: 1 = the file continues (call `getw` again)
-;   $0660 MB_CMD    command line, 0-terminated, up to 79 chars
-;   $06B0 MB_PROMPT current path ("d1:/games"), 0-terminated, ≤ 31 chars
+;   $0660 MB_CMD    command line, 0-terminated, up to 111 chars ($0660-$06CF)
+;   $06D0 MB_NET*   network request/result (net.s)
+;   $06E8 MB_PROMPT current path ("D1:/games"), 0-terminated, ≤ 23 chars
 ; The mailbox is only serviced while ASH waits for a key at its prompt.
 ; ===========================================================================
 MB_MAGIC  = $0640
@@ -41,7 +42,7 @@ MB_ABORT  = $0650
 MB_RAM    = $0651
 MB_MORE   = $0653
 MB_CMD    = $0660
-MB_PROMPT = $06B0
+MB_PROMPT = $06E8
 OBUF      = $7800               ; command output mirror (TN: below the getw window)
 OBCAP     = $0800
 RAMWIN    = $8000               ; getw window
@@ -54,8 +55,9 @@ mb_init:
         sta MB_MAGIC
         lda #'S'
         sta MB_MAGIC+1
-        lda #1
+        lda #2
         sta MB_VER
+        lda #1
         sta MB_STATUS
         lda #0
         sta MB_CMDREQ
@@ -114,9 +116,9 @@ mb_prompt:
         lda #0
         sta mirror
         ldy obn
-        cpy #31
+        cpy #23
         bcc :+
-        ldy #31
+        ldy #23
 :       sta MB_PROMPT,y
         rts
 
@@ -176,8 +178,8 @@ mb_out: ldx mirror
         sbc MB_CAP+1
         bcs @r
         bcc @st
-@prm:   ldx obn                 ; prompt: 31 chars
-        cpx #31
+@prm:   ldx obn                 ; prompt: 23 chars
+        cpx #23
         bcs @r
 @st:    ldy #0
         lda tmp

@@ -64,8 +64,9 @@ BASICLO = $7800                 ; MEMLO for the `basic` command (above us)
 .define EDITION ""
 .endif
 EOL     = $9B
-MAXLEN  = 76                    ; input line (just under two screen rows)
+MAXLEN  = 111                   ; input line (URLs are long; the OS editor takes 3 rows)
 MAXARGS = 8
+HISTN   = 6                     ; history entries
 MAXDIR  = 64
 HHANDLE = 1                     ; our H: handle (0 is left to the H: handler)
 
@@ -106,9 +107,9 @@ emsg:   .res 2
 ; ---- buffers -----------------------------------------------------------------
         .bss
 dirtab: .res MAXDIR*16          ; loaded directory: raw 16-byte DOS entries
-hist:   .res 8*78                ; MAXLEN+1 each
-linebuf:.res 80
-argbuf: .res 80
+hist:   .res HISTN*78            ; entries of up to 77 chars
+linebuf:.res 128
+argbuf: .res 128
 pathbuf:.res 80
 namebuf:.res 64                 ; H: name frame
 argv:   .res MAXARGS
@@ -894,7 +895,7 @@ hist_load:                      ; recall entry hsel (0 = newest)
         lda hist_head
         clc
         sbc hsel                ; head - 1 - hsel
-        and #7
+        jsr hmod
         jsr hist_ptr
         ldy #0
 @l:     lda (ptr),y
@@ -911,7 +912,7 @@ hist_add:
         lda hist_head           ; skip a repeat of the newest entry
         sec
         sbc #1
-        and #7
+        jsr hmod
         jsr hist_ptr
         ldy #0
 @c:     lda (ptr),y
@@ -928,17 +929,28 @@ hist_add:
         sta (ptr),y
         beq :+
         iny
-        bne @cp
+        cpy #77                 ; entries hold 77 chars (long URLs get cut)
+        bcc @cp
+        lda #0
+        sta (ptr),y
 :       lda hist_head
         clc
         adc #1
-        and #7
+        jsr hmod
         sta hist_head
         lda hist_n
-        cmp #8
+        cmp #HISTN
         bcs @r
         inc hist_n
 @r:     rts
+
+hmod:   bpl :+                  ; A (−HISTN..2·HISTN−1) mod HISTN
+        clc
+        adc #HISTN
+:       cmp #HISTN
+        bcc :+
+        sbc #HISTN
+:       rts
 
 ; ---- tab completion ---------------------------------------------------------
 rl_tab: ldx len                 ; word start
@@ -2873,7 +2885,7 @@ cmd_history:
         lda hist_head           ; slot = head - xi
         sec
         sbc xi
-        and #7
+        jsr hmod
         jsr hist_ptr
         lda ptr
         ldy ptr+1
@@ -3043,10 +3055,10 @@ themes: .byte $82,$0E,$82       ; deep blue (default)
         .byte $00,$0C,$00       ; white on black
 stockc: .byte $28,$CA,$94,$46,$00
 
-histlo: .repeat 8, I
+histlo: .repeat HISTN, I
         .byte <(hist+I*78)
         .endrepeat
-histhi: .repeat 8, I
+histhi: .repeat HISTN, I
         .byte >(hist+I*78)
         .endrepeat
 

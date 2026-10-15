@@ -61,7 +61,7 @@ class Disk:
 
 
 MB = 0x0640                      # ASH-TN mailbox (see tn.s)
-MB_CMDREQ, MB_STATUS, MB_LEN, MB_PING, MB_PONG, MB_CMD = 0x643, 0x644, 0x64B, 0x64E, 0x64F, 0x660
+MB_CMDREQ, MB_STATUS, MB_LEN, MB_PING, MB_PONG, MB_CMD = 0x643, 0x644, 0x64B, 0x64E, 0x64F, 0x660   # mailbox v2
 MB_OUT, MB_RAM, MB_MORE = 0x647, 0x651, 0x653
 
 

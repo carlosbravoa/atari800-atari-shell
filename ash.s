@@ -57,7 +57,7 @@ ICAX1   = $034A
 ICAX2   = $034B
 BASICLO = $7800                 ; MEMLO for the `basic` command (above us)
 
-.define VERSION "1.2"           ; one number for both editions (release tag v1.2.0)
+.define VERSION "1.3"           ; one number for both editions (release tag v1.3.0)
 .ifdef TN
 .define EDITION " TN"
 .else

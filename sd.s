@@ -701,7 +701,9 @@ sd_wopen:
         sta hwlen
         clc
         rts
-@no:    lda #E_SDREF
+@no:    lda #1
+        sta k_err               ; the refusal is ours, not the source stream's
+        lda #E_SDREF
         sta err
         sec
 @r:     rts

@@ -19,7 +19,7 @@
 ;   $064E MB_PING   ASH increments to ask "is the PC there?"
 ;   $064F MB_PONG   the PC copies MB_PING here
 ;   $0650 MB_ABORT  PC sets 1 to cancel the running command (like BREAK)
-;   $0651 MB_RAMLO/HI  getw: bytes in the RAM window ($9000, 12 KB)
+;   $0651 MB_RAMLO/HI  getw: bytes in the RAM window ($9000, 11 KB)
 ;   $0653 MB_MORE   getw: 1 = the file continues (call `getw` again)
 ;   $0660 MB_CMD    command line, 0-terminated, up to 111 chars ($0660-$06CF)
 ;   $06D0 MB_NET*   network request/result (net.s)
@@ -45,8 +45,8 @@ MB_CMD    = $0660
 MB_PROMPT = $06E8
 OBUF      = $7800               ; command output mirror, $7800-$8FFF
 OBCAP     = $1800
-RAMWIN    = $9000               ; getw / URL window, $9000-$BFFF
-RAMWSIZE  = $3000
+RAMWIN    = $9000               ; getw / URL window, $9000-$BBFF
+RAMWSIZE  = $2C00               ; to $BBFF: the OS display list sits at $BC20
 CH        = $02FC
 
 ; power-on: announce ourselves, idle state

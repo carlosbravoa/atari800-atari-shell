@@ -409,6 +409,7 @@ class Machine:
                 lines.append(f"d {'':8s} {name[:27]}" if os.path.isdir(full) else f"f {os.path.getsize(full):8d} {name[:27]}")
             lines.append("END")
             text = b"\x9b".join(l.encode("latin1") for l in lines) + b"\x9b"
+            text = text[:0x2A00]
             m[0x9200:0x9200 + len(text)] = text
             return finish(1, len(text), 2)
         if os.path.isdir(host):

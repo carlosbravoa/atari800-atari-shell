@@ -820,7 +820,8 @@ x_point:
 @bad:   ldy #ST_PLEN
         rts
 
-; XIO: 32 rename, 33 delete, 35 lock, 36 unlock, 37 point, 38 note, 42 mkdir
+; XIO: 32 rename, 33 delete, 35 lock, 36 unlock, 37 point, 38 note, 42 mkdir,
+; 254 format (through the shell)
 d_spec: lda ICCOMZ
         cmp #37
         beq x_point
@@ -842,8 +843,22 @@ d_spec: lda ICCOMZ
         cmp #42
         bne :+
         jmp x_mkdir
-:       ldy #ST_NOTIMP
+:       cmp #254
+        bne @ni
+        ldx #2                  ; format: the shell's fmt_disk, if the shell
+:       lda ash_sig,x           ; is still in RAM (BASIC) — not under a
+        cmp s_ash,x             ; launched program that replaced it
+        bne @ni
+        dex
+        bpl :-
+        ldx f_drv
+        jsr fmt_disk
+        bcs @r
+        ldy #ST_OK
+        rts
+@ni:    ldy #ST_NOTIMP
 @r:     rts
+s_ash:  .byte "ASH"
 
 x_lock: jsr v_load              ; (writability check)
         bcs @r

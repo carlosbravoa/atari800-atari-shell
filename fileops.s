@@ -250,20 +250,41 @@ cmd_format:
         beq :+
         rts
 :
-        ldx t_drive             ; only a blank disk or a 720-sector DOS 2 one
+        ldx t_drive
+        jsr fmt_disk
+        bcc @r
+        cpy #ST_FORMAT
+        beq @ro
+        lda #E_IO
+        sta err
+@e:     jmp perr
+@ro:    lda #E_ROFS
+        sta err
+        jmp perr
+@u:     jmp usage
+@r:     rts
+
+; format drive X as an empty 720-sector DOS 2 disk: fresh VTOC, directory
+; and a boot sector stub (boots to BASIC like a blank DOS disk). Only a
+; blank disk or a DOS 2 one — never a MyDOS big disk, DOS 2.5 ED or
+; anything else. C=1 + Y = CIO status on refusal/error. Also the FMS's
+; XIO 254 (kernel.s x_fmt) while the shell is in RAM.
+fmt_disk:
+        stx fmtdrv
         lda #<360
         ldy #>360
         jsr rdsec
-        bcc :+
-        jmp @io
-:       lda dbuf
+        bcs @r
+        lda dbuf
         beq @ok
         cmp #2
-        bne @roj
+        bne @no
         lda dbuf+2
         cmp #3
         bcc @ok
-@roj:   jmp @ro
+@no:    ldy #ST_FORMAT
+        sec
+@r:     rts
 @ok:    ldx #0                  ; VTOC: 707 free, 0-3 and 360-368 used
         txa
 :       sta sbuf,x
@@ -289,14 +310,14 @@ cmd_format:
         sta sbuf+55
         lda #$7F
         sta sbuf+56
-        lda t_drive
+        lda fmtdrv
         sta s_drv
         lda #<360
         sta s_sec
         lda #>360
         sta s_sec+1
         jsr @wr
-        bcs @io
+        bcs @r
         ldx #0                  ; an empty directory: 361-368
         txa
 :       sta sbuf,x
@@ -304,43 +325,24 @@ cmd_format:
         bne :-
 @dir:   inc s_sec
         jsr @wr
-        bcs @io
+        bcs @r
         lda s_sec
         cmp #<369
         bne @dir
         lda #$FF                ; the D: handler reloads this disk's VTOC
         sta v_drv
-        ldx #127                ; boot sector: a stub that just returns, so
-        lda #0                  ; the disk boots to BASIC like a blank DOS disk
-:       sta sbuf,x
-        dex
-        bpl :-
-        ldx #7
+        ldx #7                  ; boot sector: sbuf is zero past the stub
 :       lda bootstub,x
         sta sbuf,x
         dex
         bpl :-
-        lda t_drive
-        sta s_drv
         lda #1
         sta s_sec
         lda #0
         sta s_sec+1
-        lda #<sbuf
-        ldy #>sbuf
-        jsr wr_any
-        bcc @r
-@io:    lda #E_IO
-        sta err
-        jmp perr
 @wr:    lda #<sbuf
         ldy #>sbuf
         jmp wr_any
-@ro:    lda #E_ROFS
-        sta err
-@e:     jmp perr
-@u:     jmp usage
-@r:     rts
 
 ; cp SRC DST — any disk or h: to any disk or h:; DST may be a directory
 cmd_cp: lda argc

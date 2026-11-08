@@ -132,11 +132,11 @@ def suite(dd):
     tag = "DD" if dd else "SD"
     tmp = tempfile.mkdtemp()
     atr = os.path.join(tmp, "t.atr")
-    blank_atr(atr, dd)
+    blank_atr(atr, dd, fmt=False)
     r = Rig(atr)
-    check(r.xio(254, "D1:") == 146, f"{tag} XIO 254 (format is the shell's)")
-    r.fsck(f"{tag} fresh")
-    check(r.free() == 707, f"{tag} free when fresh {r.free()}")
+    check(r.xio(254, "D1:") == 1, f"{tag} format blank")
+    r.fsck(f"{tag} format")
+    check(r.free() == 707, f"{tag} free after format {r.free()}")
     rnd = random.Random(7)
     files = {}
     for i, size in enumerate([0, 1, 124, 125, 126, 253, 254, 255, 1000, 5000, 20000]):
@@ -227,6 +227,10 @@ def suite(dd):
     check(y == 162, f"{tag} disk full -> {y}")
     r.cio(0x10, 12)
     p = r.fsck(f"{tag} full")
+    sig = bytes(r.mc.m[0x2006:0x2009])
+    r.mc.m[0x2006] = 0                    # a launched program replaced the shell
+    check(sig == b"ASH" and r.xio(254, "D1:") == 146, f"{tag} XIO 254 without the shell")
+    r.mc.m[0x2006:0x2009] = sig
     # everything survives a reload through the plain reader
     return tmp
 
@@ -242,7 +246,7 @@ def big_suite(dd, nsec, reserve_to=0):
     img, free0 = d.finish()
     open(atr, "wb").write(img)
     r = Rig(atr)
-    check(r.xio(254, "D1:") == 146, f"{tag} XIO 254 not implemented")
+    check(r.xio(254, "D1:") == 175, f"{tag} format refused")
     check(r.free() == free0, f"{tag} untouched free {r.free()} != {free0}")
     rnd = random.Random(nsec)
     per = 253 if dd else 125

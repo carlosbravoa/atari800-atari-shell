@@ -506,6 +506,11 @@ w_bad:  sec
 wo_d:   jsr mkfn
         lda #8
         jsr c_open
+        bpl w_ok
+        pha                     ; a failed OPEN leaves the IOCB marked open
+        jsr c_close             ; (OS behaviour): close it or the next one gets 129
+        pla
+        tay
 w_cio:  bpl w_ok
         lda wquiet
         bne w_bad

@@ -2921,7 +2921,7 @@ cmd_lp: jsr open_arg1
         jsr c_open
         bpl @l
         jsr perr_cio
-        jmp stream_end
+        jmp @done               ; close: a failed OPEN leaves the IOCB marked open
 @l:     jsr k_getbyte
         bcs @done
         cmp #$0A

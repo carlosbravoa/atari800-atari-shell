@@ -331,6 +331,8 @@ cp_core:
         bcc cpc_dir
 cp_e1:  jmp cp_err
 cpc_new:
+        lda #0                  ; a new file: lookup_comp's E_NOENT is not an error
+        sta err
         ldx #0
 :       lda comp,x
         sta cbuf,x
@@ -424,6 +426,7 @@ w_open: lda #0
         jmp w_bad
 :
 .endif
+        lda wdev                ; re-test: the TN block's cmp #5 left its own flags
         bne wo_d
         jsr h_name0             ; h: on firmware handle 0
         ldx #0

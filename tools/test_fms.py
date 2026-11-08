@@ -195,8 +195,87 @@ def suite(dd):
     return tmp
 
 
+def big_suite(dd, nsec, reserve_to=0):
+    """A MyDOS big disk; reserve_to marks 4..reserve_to used (an image run the
+    fsck allows) so allocation starts in a high VTOC sector."""
+    tag = f"{'DD' if dd else 'SD'}{nsec}"
+    tmp = tempfile.mkdtemp()
+    atr = os.path.join(tmp, "b.atr")
+    d = mkatr.Disk(dd, nsec)
+    d.used |= set(range(4, reserve_to + 1))
+    img, free0 = d.finish()
+    open(atr, "wb").write(img)
+    r = Rig(atr)
+    check(r.xio(254, "D1:") == 175, f"{tag} format refused")
+    check(r.free() == free0, f"{tag} untouched free {r.free()} != {free0}")
+    rnd = random.Random(nsec)
+    per = 253 if dd else 125
+    files = {}
+    for i, size in enumerate([0, 1, per, per + 1, 3000, 40000]):
+        data = bytes(rnd.randrange(256) for _ in range(size))
+        nm = f"B{i}.DAT"
+        check(r.write(f"D1:{nm}", data) == 1, f"{tag} write {nm}")
+        files[nm] = data
+    r.fsck(f"{tag} writes")
+    for nm, data in files.items():
+        got = r.read(f"D1:{nm}")
+        check(got == data, f"{tag} readback {nm} ({len(data)}): {got if isinstance(got, int) else len(got)}")
+    dsk = r.mc.disks[1]
+    e = dsk.read(361)
+    st = e[3] | (e[4] << 8)
+    check(e[0] == 0x46, f"{tag} entry flags {e[0]:02x} (want 46: 16-bit links)")
+    check(st > reserve_to, f"{tag} first file at {st}, reserved to {reserve_to}")
+    want = free0 - sum(max(1, -(-len(x) // per)) for x in files.values())
+    check(r.free() == want, f"{tag} free after writes {r.free()} != {want}")
+    check(r.write("D1:B5.DAT", b"tail" * 100, mode=9) == 1, f"{tag} append")
+    check(r.read("D1:B5.DAT") == files["B5.DAT"] + b"tail" * 100, f"{tag} append readback")
+    check(r.write("D1:B4.DAT", b"small") == 1 and r.read("D1:B4.DAT") == b"small", f"{tag} overwrite")
+    r.fsck(f"{tag} append/overwrite")
+    check(r.xio(42, "D1:HI") == 1, f"{tag} mkdir")
+    check(r.write("D1:HI/IN.TXT", b"up here") == 1 and r.read("D1:HI/IN.TXT") == b"up here", f"{tag} subdir file")
+    e = dsk.read(361)
+    o = 6 * 16
+    check(e[o] == 0x10 and (e[o + 3] | (e[o + 4] << 8)) > reserve_to, f"{tag} dir entry {e[o]:02x} @{e[o + 3] | (e[o + 4] << 8)}")
+    r.fsck(f"{tag} dirs")
+    check(r.xio(33, "D1:HI/IN.TXT") == 1 and r.xio(33, "D1:HI") == 1, f"{tag} rmdir")
+    f1 = r.free()
+    check(r.xio(33, "D1:B5.DAT") == 1 and r.free() > f1, f"{tag} delete frees ({f1} -> {r.free()})")
+    r.fsck(f"{tag} delete")
+    big = bytes(range(256)) * 100
+    y, k = 1, 0
+    while y == 1 and k < 80:
+        y = r.write(f"D1:FILL{k}", big)
+        k += 1
+    check(y == 162, f"{tag} disk full -> {y} after {k}")
+    r.cio(0x10, 12)
+    check(r.free() == 0, f"{tag} full disk free {r.free()}")
+    r.fsck(f"{tag} full")
+    check(r.xio(33, "D1:FILL*") == 1, f"{tag} delete fill")
+    r.fsck(f"{tag} after delete")
+
+
+def ed_suite():
+    """A DOS 2.5 enhanced-density disk (size code 2, 1010 sectors, VTOC2 in
+    1024) must stay read-only."""
+    tmp = tempfile.mkdtemp()
+    atr = os.path.join(tmp, "ed.atr")
+    img, _ = mkatr.Disk(False).finish()
+    img = bytearray(img) + bytes(128 * 320)
+    o = 16 + 384 + (360 - 4) * 128
+    img[o + 1:o + 3] = (1010).to_bytes(2, "little")
+    img[2:4] = (len(img[16:]) // 16).to_bytes(2, "little")
+    open(atr, "wb").write(img)
+    r = Rig(atr)
+    check(r.write("D1:X.DAT", b"no") == 175, "ED write refused")
+    check(r.xio(42, "D1:SUB") == 175, "ED mkdir refused")
+
+
 if __name__ == "__main__":
     for dd in (False, True):
         suite(dd)
+    big_suite(True, 1440)                 # 360K: 2 VTOC sectors, fill crosses into 359
+    big_suite(False, 1040)                # MyDOS ED: 3 VTOC sectors (SD pairs)
+    big_suite(True, 65535, reserve_to=65000)   # 16 MB: allocation in the last window
+    ed_suite()
     print("all FMS tests passed" if not fails else f"{fails} failure(s)")
     sys.exit(1 if fails else 0)

@@ -140,6 +140,7 @@ tjif:   .res 3                  ; RTCLOK at that moment (hi, mid, lo)
 tsynced: .res 1
 jif0:   .res 2                  ; TN: jiffy timer start
 wdev:   .res 1
+fmtdrv: .res 1                  ; fmt_disk: drive
 wquiet: .res 1
 ename:  .res 16                 ; editor state
 emod:   .res 1
@@ -225,6 +226,8 @@ xi:     .res 1
         .code
 entry:  jmp start               ; $2000 cold entry (boot sector, deploy)
         jmp warm                ; $2003 warm entry (RESET, BASIC's DOS)
+ash_sig: .byte "ASH"            ; $2006: the shell is in RAM (the FMS checks
+                                ; before calling fmt_disk for XIO 254)
 
 start:  cld
         ldx #$FF
@@ -2918,7 +2921,7 @@ cmd_lp: jsr open_arg1
         jsr c_open
         bpl @l
         jsr perr_cio
-        jmp stream_end
+        jmp @done               ; close: a failed OPEN leaves the IOCB marked open
 @l:     jsr k_getbyte
         bcs @done
         cmp #$0A

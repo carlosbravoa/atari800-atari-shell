@@ -250,41 +250,99 @@ cmd_format:
         beq :+
         rts
 :
-        lda #0
-        sta comp
-        jsr mkfn
-        lda #254
-        jsr c_xio
-        bmi @cerr
-        ldx #127                ; boot sector: a stub that just returns, so
-        lda #0                  ; the disk boots to BASIC like a blank DOS disk
+        ldx t_drive
+        jsr fmt_disk
+        bcc @r
+        cpy #ST_FORMAT
+        beq @ro
+        lda #E_IO
+        sta err
+@e:     jmp perr
+@ro:    lda #E_ROFS
+        sta err
+        jmp perr
+@u:     jmp usage
+@r:     rts
+
+; format drive X as an empty 720-sector DOS 2 disk: fresh VTOC, directory
+; and a boot sector stub (boots to BASIC like a blank DOS disk). Only a
+; blank disk or a DOS 2 one — never a MyDOS big disk, DOS 2.5 ED or
+; anything else. C=1 + Y = CIO status on refusal/error. Also the FMS's
+; XIO 254 (kernel.s x_fmt) while the shell is in RAM.
+fmt_disk:
+        stx fmtdrv
+        lda #<360
+        ldy #>360
+        jsr rdsec
+        bcs @r
+        lda dbuf
+        beq @ok
+        cmp #2
+        bne @no
+        lda dbuf+2
+        cmp #3
+        bcc @ok
+@no:    ldy #ST_FORMAT
+        sec
+@r:     rts
+@ok:    ldx #0                  ; VTOC: 707 free, 0-3 and 360-368 used
+        txa
 :       sta sbuf,x
-        dex
-        bpl :-
-        ldx #7
+        inx
+        bne :-
+        lda #2
+        sta sbuf
+        lda #<707
+        sta sbuf+1
+        sta sbuf+3
+        lda #>707
+        sta sbuf+2
+        sta sbuf+4
+        lda #$FF
+        ldx #10
+:       sta sbuf,x
+        inx
+        cpx #100
+        bcc :-
+        lda #$0F
+        sta sbuf+10
+        lda #0
+        sta sbuf+55
+        lda #$7F
+        sta sbuf+56
+        lda fmtdrv
+        sta s_drv
+        lda #<360
+        sta s_sec
+        lda #>360
+        sta s_sec+1
+        jsr @wr
+        bcs @r
+        ldx #0                  ; an empty directory: 361-368
+        txa
+:       sta sbuf,x
+        inx
+        bne :-
+@dir:   inc s_sec
+        jsr @wr
+        bcs @r
+        lda s_sec
+        cmp #<369
+        bne @dir
+        lda #$FF                ; the D: handler reloads this disk's VTOC
+        sta v_drv
+        ldx #7                  ; boot sector: sbuf is zero past the stub
 :       lda bootstub,x
         sta sbuf,x
         dex
         bpl :-
-        lda t_drive
-        sta s_drv
         lda #1
         sta s_sec
         lda #0
         sta s_sec+1
-        lda #<sbuf
+@wr:    lda #<sbuf
         ldy #>sbuf
-        jsr wr_any
-        bcc @r
-        lda #E_IO
-        sta err
-        jmp perr
-@cerr:  jmp perr_cio
-@ro:    lda #E_ROFS
-        sta err
-@e:     jmp perr
-@u:     jmp usage
-@r:     rts
+        jmp wr_any
 
 ; cp SRC DST — any disk or h: to any disk or h:; DST may be a directory
 cmd_cp: lda argc
@@ -448,6 +506,11 @@ w_bad:  sec
 wo_d:   jsr mkfn
         lda #8
         jsr c_open
+        bpl w_ok
+        pha                     ; a failed OPEN leaves the IOCB marked open
+        jsr c_close             ; (OS behaviour): close it or the next one gets 129
+        pla
+        tay
 w_cio:  bpl w_ok
         lda wquiet
         bne w_bad

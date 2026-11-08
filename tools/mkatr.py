@@ -8,7 +8,8 @@ With --shell/--boot the disk boots straight into ASH: the boot sector loads
 the raw shell image from sectors 4.. (marked used in the VTOC, outside any
 file, the way DOS.SYS boots). Files are written as standard DOS 2.0 files
 (file-numbered sector links), so DOS 2.x / MyDOS read the disk as well.
-720 sectors, SD (128-byte, 90K) or DD (256-byte, 180K).
+720 sectors, SD (128-byte, 90K) or DD (256-byte, 180K); --sectors N above
+943 makes a MyDOS big disk (more VTOC sectors below 360, 16-bit links).
 """
 import argparse
 import os
@@ -18,6 +19,20 @@ import sys
 NSEC = 720
 VTOC = 360
 DIR0 = 361
+
+
+def vtoc_sectors(code, ss):
+    """MyDOS: VTOC sectors from the size code in byte 0 (2 = DOS 2, one)."""
+    return 1 if code == 2 else (code * 2 - 3 if ss == 128 else code - 1)
+
+
+def vt_loc(ss, n):
+    """(VTOC sector, byte) holding sector n's bit: 360 covers 0-943, the
+    MyDOS continuation runs downward from 359."""
+    if n <= 943:
+        return VTOC, 10 + n // 8
+    b = (n - 944) // 8
+    return VTOC - 1 - b // ss, b % ss
 
 
 def dos_name(path, override=None):
@@ -44,15 +59,21 @@ def xex_main_image(path):
 
 
 class Disk:
-    def __init__(self, dd=False):
+    def __init__(self, dd=False, nsec=NSEC):
         self.ss = 256 if dd else 128
+        self.nsec = nsec
+        self.big = nsec > 943               # MyDOS big disk
+        self.code = 2
+        if self.big:
+            self.code += (-(-(nsec - 943) // 8) + 255) // 256
+        self.nvt = vtoc_sectors(self.code, self.ss)
         self.sec = {n: bytearray(128 if n <= 3 else self.ss)
-                    for n in range(1, NSEC + 1)}
-        self.used = set(range(0, 4)) | set(range(VTOC, DIR0 + 8))
+                    for n in range(1, nsec + 1)}
+        self.used = set(range(0, 4)) | set(range(VTOC - self.nvt + 1, DIR0 + 8))
         self.dirn = 0
 
     def alloc(self):
-        for n in range(4, NSEC):            # DOS 2 uses 1-719
+        for n in range(4, self.nsec + 1 if self.big else NSEC):   # DOS 2 uses 1-719
             if n not in self.used:
                 self.used.add(n)
                 return n
@@ -84,12 +105,12 @@ class Disk:
             nxt = secs[i + 1] if i + 1 < len(secs) else 0
             s = self.sec[n]
             s[:len(c)] = c
-            s[self.ss - 3] = (fno << 2) | (nxt >> 8)
+            s[self.ss - 3] = (nxt >> 8) | (0 if self.big else fno << 2)
             s[self.ss - 2] = nxt & 0xFF
             s[self.ss - 1] = len(c)
         d = self.sec[DIR0 + fno // 8]
         o = (fno % 8) * 16
-        d[o] = 0x42
+        d[o] = 0x46 if self.big else 0x42   # $04: 16-bit links, no file number
         d[o + 1:o + 3] = len(secs).to_bytes(2, "little")
         d[o + 3:o + 5] = secs[0].to_bytes(2, "little")
         d[o + 5:o + 13] = name.ljust(8).encode()
@@ -99,15 +120,17 @@ class Disk:
 
     def finish(self):
         v = self.sec[VTOC]
-        v[0] = 2
-        v[1:3] = (707).to_bytes(2, "little")
+        v[0] = self.code
+        total = self.nsec - 3 - self.nvt - 8 if self.big else 707
+        v[1:3] = total.to_bytes(2, "little")
         free = 0
-        for n in range(NSEC):
+        for n in range(1, self.nsec + 1 if self.big else NSEC):
             if n not in self.used:
-                v[10 + n // 8] |= 0x80 >> (n % 8)
+                vs, vb = vt_loc(self.ss, n)
+                self.sec[vs][vb] |= 0x80 >> (n % 8)
                 free += 1
         v[3:5] = free.to_bytes(2, "little")
-        body = b"".join(bytes(self.sec[n]) for n in range(1, NSEC + 1))
+        body = b"".join(bytes(self.sec[n]) for n in range(1, self.nsec + 1))
         paras = len(body) // 16
         hdr = bytearray(16)
         hdr[0:2] = (0x0296).to_bytes(2, "little")
@@ -124,6 +147,7 @@ def read_atr(path):
     ss = int.from_bytes(d[4:6], "little")
     body = d[16:]
     full = ss == 256 and len(body) % 256 == 0     # boot sectors padded to 256
+    read_atr.nsec = len(body) // 256 if full else 3 + (len(body) - 384) // ss
 
     def sec(n):
         if ss == 128 or n <= 3:
@@ -169,13 +193,17 @@ def fsck(path):
     Returns a list of problems (empty = clean). Sectors marked used that no
     file owns are allowed only as one run starting at 4 (a boot image)."""
     ss, sec = read_atr(path)
+    nsec = read_atr.nsec
     probs, owner = [], {}
     v = sec(VTOC)
-    if v[0] != 2:
-        return [f"VTOC dos byte {v[0]} (not DOS 2)"]
+    if v[0] < 2 or v[0] > 40:
+        return [f"VTOC dos byte {v[0]} (not DOS 2 / MyDOS)"]
+    big = v[0] != 2
+    nvt = vtoc_sectors(v[0], ss)
+    top = nsec if big else 720
 
     def own(n, who):
-        if not 1 <= n <= 720:
+        if not 1 <= n <= top:
             probs.append(f"{who}: sector {n} out of range")
         elif n in owner:
             probs.append(f"{who}: sector {n} also used by {owner[n]}")
@@ -205,7 +233,7 @@ def fsck(path):
                 probs.append(f"{who}: still open for write")
             n, k, seen = st, 0, set()
             while n:
-                if n in seen or k > 2000:
+                if n in seen or k > nsec:
                     probs.append(f"{who}: chain loops")
                     break
                 seen.add(n)
@@ -221,13 +249,24 @@ def fsck(path):
             if k != cnt:
                 probs.append(f"{who}: {k} sectors in chain, entry says {cnt}")
     walk(DIR0, "")
-    nbits = 721 if int.from_bytes(v[1:3], "little") > 707 else 720   # MyDOS uses 720 too
-    used = {n for n in range(nbits) if not v[10 + n // 8] & (0x80 >> (n % 8))}
-    reserved = set(range(0, 4)) | set(range(VTOC, DIR0 + 8))
+    if big:
+        nbits = nsec + 1
+    else:
+        nbits = 721 if int.from_bytes(v[1:3], "little") > 707 else 720   # MyDOS uses 720 too
+
+    def isfree(n):
+        vs, vb = vt_loc(ss, n)
+        return sec(vs)[vb] & (0x80 >> (n % 8))
+    used = {n for n in range(nbits) if not isfree(n)}
+    reserved = set(range(0, 4)) | set(range(VTOC - nvt + 1, DIR0 + 8))
     for n in sorted(set(owner) - used):
         probs.append(f"sector {n} ({owner[n]}) is free in the VTOC")
     orphan = sorted(used - set(owner) - reserved)
-    run = list(range(4, 4 + len(orphan)))
+    run, n = [], 4                      # one run from sector 4, skipping reserved ones
+    while len(run) < len(orphan):
+        if n not in reserved:
+            run.append(n)
+        n += 1
     if orphan and orphan != run:
         probs.append(f"{len(orphan)} used sectors no file owns: {orphan[:12]}")
     free = int.from_bytes(v[3:5], "little")
@@ -242,6 +281,7 @@ def main():
     ap.add_argument("files", nargs="*")
     ap.add_argument("-o", "--out")
     ap.add_argument("--dd", action="store_true", help="256-byte sectors (180K)")
+    ap.add_argument("--sectors", type=int, default=NSEC, help="sectors; above 943 = MyDOS big disk")
     ap.add_argument("--shell", help="ash.xex: make the disk boot into ASH")
     ap.add_argument("--boot", help="boot.bin (with --shell)")
     ap.add_argument("--list", metavar="ATR")
@@ -263,7 +303,7 @@ def main():
     if not a.out:
         ap.error("-o is required (or --list)")
 
-    disk = Disk(a.dd)
+    disk = Disk(a.dd, a.sectors)
     if a.shell:
         assert a.boot, "--shell needs --boot"
         n = disk.put_boot(open(a.boot, "rb").read(), xex_main_image(a.shell))

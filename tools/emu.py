@@ -174,6 +174,8 @@ class Machine:
         cmd = m[io + 2]
         dev = self.iocb.get(x)
         if cmd == 3:                                   # OPEN
+            if dev is not None:
+                return self.rts(129)                   # IOCB already open
             name = self.str_at(self.w16(io + 4))
             letter = name[:1].upper()
             unit = int(name[1]) if len(name) > 2 and name[1].isdigit() and name[2] == ":" else 1
@@ -184,9 +186,8 @@ class Machine:
             if tab is None:
                 return self.rts(130)
             m[io + 1] = unit
+            self.iocb[x] = tab                         # like the OS: a failed OPEN leaves the IOCB open
             y, _ = self.hcall(tab, 0, x)
-            if y < 128:
-                self.iocb[x] = tab
             return self.rts(y)
         if cmd == 12:                                  # CLOSE
             if isinstance(dev, int):

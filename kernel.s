@@ -12,8 +12,9 @@
 ;
 ; Disk format written: DOS 2.0 (VTOC at 360, directory 361-368, 64 entries,
 ; file-numbered sector links), single or double density, 720 sectors, plus
-; MyDOS subdirectories (an 8-sector directory, entry flag $10). Disks whose
-; VTOC isn't the plain DOS 2 kind (big MyDOS, SpartaDOS) are read-only.
+; MyDOS subdirectories (an 8-sector directory, entry flag $10) and MyDOS
+; big disks (up to 65535 sectors: more VTOC sectors below 360, 16-bit sector
+; links). DOS 2.5 enhanced density and SpartaDOS disks are read-only.
 ; ===========================================================================
         .segment "KERNEL"
 
@@ -25,8 +26,11 @@ ICCOMZ  = $22
 ICBALZ  = $24
 ICAX1Z  = $2A
 ICIDNO  = $2E                   ; IOCB number * 16
+ICAX3   = $034C                 ; + ICIDNO: NOTE / POINT sector and byte
+ICAX4   = $034D
+ICAX5   = $034E
 HATABS  = $031A
-NH      = 3                     ; D: files open at once
+NH      = 2                     ; D: files open at once
 
 ST_OK   = 1
 ST_NOTOPEN = 133
@@ -38,9 +42,11 @@ ST_DRIVE = 160
 ST_MANY = 161
 ST_FULL = 162
 ST_NAME = 165
+ST_PLEN = 166                   ; POINT: byte beyond the sector's data
 ST_LOCKED = 167
 ST_DIRFULL = 169
 ST_NOTFOUND = 170
+ST_POINT = 171                  ; POINT on a file not open for reading
 ST_FORMAT = 175                 ; not a DOS 2 disk: read-only
 
 ; ---- SIO -------------------------------------------------------------------
@@ -505,12 +511,15 @@ ow_r:   rts
         bcs d_ret2
         jsr f_entp
         lda #$43
+        ora v_big               ; 16-bit links on a big disk
         jsr f_mkent
         jsr wr_dbuf
         bcs d_ret2
         jsr v_save
         bcs d_ret2
         ldx hh
+        lda v_big
+        sta h_l16,x
         lda f_s
         sta h_sl,x
         lda f_s+1
@@ -554,6 +563,9 @@ o_app:  jsr v_load
 :       lda (fz_p),y
         ora #$01                ; open for write
         sta (fz_p),y
+        and #$04
+        ldx hh
+        sta h_l16,x
         ldy #1
         lda (fz_p),y
         sta f_c
@@ -575,9 +587,7 @@ o_app:  jsr v_load
         sta h_sh,x
         jsr h_rd
         bcs d_ret2
-        ldy f_tr
-        lda (fz_b),y            ; link hi
-        and #$03
+        jsr h_link
         sta f_s+1
         iny
         lda (fz_b),y
@@ -695,36 +705,8 @@ d_get:  jsr h_find
 @rd:    lda h_pos,x
         cmp h_cnt,x
         bcc @have
-        lda h_nl,x
-        ora h_nh,x
-        bne :+
-        ldy #ST_EOF
-        rts
-:       lda h_nl,x
-        sta h_sl,x
-        lda h_nh,x
-        sta h_sh,x
-        jsr h_rd
+        jsr h_next
         bcs @r
-        ldx hh
-        ldy f_tr
-        lda (fz_b),y
-        pha
-        lda h_l16,x             ; 16-bit links keep all 8 bits
-        bne :+
-        pla
-        and #$03                ; DOS 2: file number<<2 | next hi
-        pha
-:       pla
-        sta h_nh,x
-        iny
-        lda (fz_b),y
-        sta h_nl,x
-        iny
-        lda (fz_b),y
-        sta h_cnt,x
-        lda #0
-        sta h_pos,x
         jmp @rd
 @have:  tay
         inc h_pos,x
@@ -747,8 +729,105 @@ d_get:  jsr h_find
 d_stat: ldy #ST_OK
         rts
 
-; XIO: 32 rename, 33 delete, 35 lock, 36 unlock, 42 mkdir, 254 format
-d_spec: jsr op_begin
+; the handle's next sector -> its buffer, link and count taken, position 0.
+; C=1 + Y on error (ST_EOF when there is none).
+h_next: ldx hh
+        lda h_nl,x
+        ora h_nh,x
+        bne :+
+        ldy #ST_EOF
+        sec
+        rts
+:       lda h_nl,x
+        sta h_sl,x
+        lda h_nh,x
+        sta h_sh,x
+        jsr h_rd
+        bcs @r
+        jsr h_link
+        sta h_nh,x
+        iny
+        lda (fz_b),y
+        sta h_nl,x
+        iny
+        lda (fz_b),y
+        sta h_cnt,x
+        lda #0
+        sta h_pos,x
+        clc
+@r:     rts
+
+; link high byte of the sector in handle hh's buffer -> A (X = hh, Y = f_tr)
+h_link: ldx hh
+        ldy f_tr
+        lda (fz_b),y
+        ldy h_l16,x             ; 16-bit links keep all 8 bits
+        bne :+
+        and #$03                ; DOS 2: file number<<2 | next hi
+:       ldy f_tr
+        rts
+
+; XIO 38 NOTE: sector and byte of the next byte -> ICAX3-5 of the IOCB
+x_note: jsr h_find
+        bcs xn_r
+        lda h_mode,x
+        cmp #4
+        bne @cur
+        lda h_cnt,x             ; reading, nothing read yet: the first sector
+        bne @cur
+        lda h_nl,x
+        sta h_sl,x
+        lda h_nh,x
+        sta h_sh,x
+@cur:   lda h_pos,x
+        pha
+        lda h_sh,x
+        pha
+        lda h_sl,x
+        ldx ICIDNO
+        sta ICAX3,x
+        pla
+        sta ICAX4,x
+        pla
+        sta ICAX5,x
+        ldy #ST_OK
+xn_r:   rts
+
+; XIO 37 POINT: ICAX3-5 of the IOCB -> position (a file open for reading)
+x_point:
+        jsr h_find
+        bcs xn_r
+        lda h_mode,x
+        cmp #4
+        beq :+
+        ldy #ST_POINT
+        rts
+:       ldy ICIDNO
+        lda ICAX3,y
+        sta h_nl,x
+        lda ICAX4,y
+        sta h_nh,x
+        jsr h_next
+        bcs xn_r
+        ldy ICIDNO
+        lda ICAX5,y
+        cmp h_cnt,x
+        beq :+
+        bcs @bad
+:       sta h_pos,x
+        ldy #ST_OK
+        rts
+@bad:   ldy #ST_PLEN
+        rts
+
+; XIO: 32 rename, 33 delete, 35 lock, 36 unlock, 37 point, 38 note, 42 mkdir,
+; 254 format (through the shell)
+d_spec: lda ICCOMZ
+        cmp #37
+        beq x_point
+        cmp #38
+        beq x_note
+        jsr op_begin
         bcs @r
         lda ICCOMZ
         cmp #33
@@ -765,10 +844,21 @@ d_spec: jsr op_begin
         bne :+
         jmp x_mkdir
 :       cmp #254
-        bne :+
-        jmp x_fmt
-:       ldy #ST_NOTIMP
+        bne @ni
+        ldx #2                  ; format: the shell's fmt_disk, if the shell
+:       lda ash_sig,x           ; is still in RAM (BASIC) — not under a
+        cmp s_ash,x             ; launched program that replaced it
+        bne @ni
+        dex
+        bpl :-
+        ldx f_drv
+        jsr fmt_disk
+        bcs @r
+        ldy #ST_OK
+        rts
+@ni:    ldy #ST_NOTIMP
 @r:     rts
+s_ash:  .byte "ASH"
 
 x_lock: jsr v_load              ; (writability check)
         bcs @r
@@ -879,10 +969,13 @@ h_io:   sta s_cmd
 ; write the handle's current sector with link -> f_s, count = h_pos
 h_flush:
         ldx hh
-        ldy f_tr
         lda h_ix,x              ; file number
         asl
         asl
+        ldy h_l16,x
+        beq :+
+        lda #0                  ; 16-bit links: no file number
+:       ldy f_tr
         ora f_s+1
         sta (fz_b),y
         iny
@@ -1207,97 +1300,219 @@ f_mkent:
         rts
 
 ; ---- VTOC -------------------------------------------------------------------
-v_load: lda v_dirty             ; unsaved allocations go out first
-        beq :+
-        jsr v_save
-        bcs @io
-:       lda f_drv
-        sta s_drv
+; vtbuf is a window on one VTOC sector of drive v_drv (v_sec = its low byte;
+; all VTOC sectors are 295-360). Sector 360 holds the header and the bitmap
+; of sectors 0-943; a MyDOS big disk (size code != 2) continues the bitmap
+; in 359, 358, ... — v_nvt sectors in all — and chains files with 16-bit
+; links (entry flag $04, v_big). The free count lives in v_cnt and is put
+; back into sector 360 when that window is written.
+v_load: jsr v_flush             ; unsaved allocations go out first
+        bcs v_lr
+        lda f_drv
         sta v_drv
-        lda #<360
-        sta s_sec
-        lda #>360
-        sta s_sec+1
-        lda #<vtbuf
-        ldy #>vtbuf
-        jsr rd_any
-        bcs @io
-        lda vtbuf
+        jsr v_r360
+        bcs v_lr
+        lda vtbuf+10            ; sanity: sectors 0-3 and 360-368 are in use
+        and #$F0
+        ora vtbuf+55
+        bne v_lro
+        lda vtbuf+56
+        bmi v_lro
+        lda vtbuf+3
+        sta v_cnt
+        lda vtbuf+4
+        sta v_cnt+1
+        lda #0
+        sta v_hix
+        sta v_big
+        ldx #1
+        lda vtbuf               ; size code
         cmp #2
-        bne @ro
-        lda vtbuf+2             ; only 720-sector disks are written: 768+
-        cmp #3                  ; (ED's 1010, big MyDOS) stay read-only
-        bcs @ro
+        bcc v_lro
+        bne @big
+        lda vtbuf+2             ; DOS 2: not an ED disk (its VTOC2 is in 1024)
+        cmp #3
+        bcs v_lro
+        bcc @one
+@big:   cmp #40
+        bcs v_lro
+        ldy #$04                ; MyDOS big disk: 16-bit links; VTOC sectors
+        sty v_big               ; SD code*2-3, DD code-1
+        ldx f_drv
+        ldy ss_tab,x
+        beq @dd
+        asl
+        sbc #2                  ; (C=0) 2*code-3
+        bne @n
+@dd:    sbc #0                  ; (C=0) code-1
+@n:     tax
+@one:   stx v_nvt
         clc
-        rts
-@ro:    ldy #ST_FORMAT
+v_lr:   rts
+v_lro:  lda #$FF                ; not a disk we write: forget it
+        sta v_drv
+        ldy #ST_FORMAT
         sec
         rts
-@io:    rts
 
 v_need: lda v_drv               ; VTOC of the current handle's drive loaded?
         cmp f_drv
-        beq :+
+        beq v_ok
         jmp v_load
-:       clc
-        rts
 
-v_save: lda #0
+; put the free count into sector 360 and write it (the window moves there)
+v_save: lda #<360
+        jsr v_win
+        bcs v_lr
+        inc v_dirty
+; write the window back if it holds unsaved changes
+v_flush:
+        lda v_dirty
+        beq v_ok
+        lda #0
         sta v_dirty
-        lda v_drv
+        lda v_sec
+        cmp #<360
+        bne :+
+        lda v_cnt               ; sector 360 carries the free count
+        sta vtbuf+3
+        lda v_cnt+1
+        sta vtbuf+4
+:       lda v_drv
         sta s_drv
-        lda #<360
+        lda v_sec
         sta s_sec
         lda #>360
         sta s_sec+1
         lda #<vtbuf
         ldy #>vtbuf
         jmp wr_any
+v_ok:   clc
+        rts
 
-; take the lowest free sector -> A/Y. C=1 + Y=162 if the disk is full.
+; make the window hold VTOC sector A (low byte)
+v_win:  cmp v_sec
+        beq v_ok
+        pha
+        jsr v_flush
+        pla
+        bcs v_lr
+v_r360x:
+        ldy #>360
+        bne v_read
+v_r360: lda #<360
+        ldy #>360
+v_read: sta v_sec               ; sector A/Y of v_drv -> vtbuf
+        sta s_sec
+        sty s_sec+1
+        lda v_drv
+        sta s_drv
+        lda #<vtbuf
+        ldy #>vtbuf
+        jsr rd_any
+        bcs :+
+        rts
+:       lda #$FF                ; the window holds nothing: reload later
+        sta v_drv
+        sec
+        rts
+
+; take the lowest free sector -> A/Y, looking first in the VTOC sector the
+; last allocation came from (v_hix: 0 = 360, k = 360-k). C=1 + Y=162 if full.
 v_alloc:
-        ldx #10
+        lda v_nvt
+        sta f_c                 ; windows left to try
+@win:   lda v_hix
+        eor #$FF
+        sec
+        adc #<360
+        jsr v_win
+        bcs @err
+        ldx #10                 ; window 0: bytes 10-99 (DOS 2) or 10-127
+        lda #100
+        ldy v_big
+        beq :+
+        lda #128
+:       ldy v_hix
+        beq @s
+        ldx #0                  ; the others: the whole sector
+        ldy f_drv
+        lda ss_tab,y            ; $80, or 0 = 256
+@s:     sta f_u
 @l:     lda vtbuf,x
         bne @f
         inx
-        cpx #100
-        bcc @l
+        cpx f_u
+        bne @l
+        inc v_hix               ; nothing here: next window, wrapping
+        lda v_hix
+        cmp v_nvt
+        bcc :+
+        lda #0
+        sta v_hix
+:       dec f_c
+        bne @win
         ldy #ST_FULL
-        sec
+@err:   sec
         rts
 @f:     ldy #0
 :       asl
         bcs :+
         iny
         bne :-
-:       stx f_t                 ; sector = (X-10)*8 + Y
-        lda #0
-        sta f_t+1
-        lda f_t
+:       sty f_t                 ; bit within the byte
+        stx f_u                 ; the byte
+        ldx #0                  ; window 0: sectors from 0, bytes from 10
+        stx f_c
+        lda v_hix
+        beq @w0
+        sec                     ; window k: from 944 + (k-1)*(sector size*8),
+        sbc #1                  ; bytes from 0
+        asl
+        asl                     ; *4: SD windows hold 1024 sectors
+        ldx f_drv
+        ldy ss_tab,x
+        bne :+
+        asl                     ; DD: 2048
+:       adc #>944               ; (C=0)
+        tax
+        lda #<944
+        sta f_c
+        lda f_u
+        bcc @mul
+@w0:    lda f_u
         sec
         sbc #10
+@mul:   stx f_t+1               ; sector = base (X:f_c) + offset*8 + bit
+        ldx #0
+        stx f_u
         asl
-        rol f_t+1
+        rol f_u
         asl
-        rol f_t+1
+        rol f_u
         asl
-        rol f_t+1
-        sty f_t
+        rol f_u
         ora f_t
+        clc
+        adc f_c
         sta f_t
+        lda f_u
+        adc f_t+1
+        sta f_t+1
 v_take: jsr v_bit               ; clear bit f_t; free count - 1
+        bcs @r
         inc v_dirty
         eor #$FF
         and vtbuf,x
         sta vtbuf,x
-        lda vtbuf+3
+        lda v_cnt
         bne :+
-        dec vtbuf+4
-:       dec vtbuf+3
+        dec v_cnt+1
+:       dec v_cnt
         lda f_t
         ldy f_t+1
         clc
-        rts
+@r:     rts
 
 ; sector A/Y back to the free pool
 v_free: sta f_t
@@ -1307,32 +1522,65 @@ v_free: sta f_t
         inc v_dirty
         ora vtbuf,x
         sta vtbuf,x
-        inc vtbuf+3
+        inc v_cnt
         bne :+
-        inc vtbuf+4
+        inc v_cnt+1
 :       rts
 
-; f_t -> X = VTOC byte, A = bit mask. C=1 if beyond the bitmap.
+; f_t -> its VTOC sector in the window, X = byte, A = bit mask.
+; C=1 if beyond the bitmap (or the window could not be read).
 v_bit:  lda f_t+1
         sta f_u
         lda f_t
-        lsr f_u
+        lsr f_u                 ; f_u:A = f_t/8
         ror
         lsr f_u
         ror
         lsr f_u
         ror
-        clc
-        adc #10
+        ldx f_u
+        bne @ext
+        cmp #118                ; sectors 0-943: window 0, from byte 10
+        bcs @ext
+        ldx v_big
+        bne :+
+        cmp #90                 ; DOS 2: only up to sector 719
+        bcs v_bno
+:       adc #10
         tax
-        cmp #100
+        lda #<360
+        bne @w
+@ext:   sec                     ; beyond: f_u:A = (f_t-944)/8
+        sbc #118
         bcs :+
+        dec f_u
+:       ldx f_drv
+        ldy ss_tab,x
+        beq @dd
+        asl                     ; SD: 128 bytes per window
+        rol f_u
+        lsr
+@dd:    tax                     ; X = byte, f_u = window-1
+        lda f_u
+        clc
+        adc #1
+        cmp v_nvt
+        bcs v_bno
+        eor #$FF                ; sector 360-k
+        sec
+        adc #<360
+@w:     stx f_u
+        jsr v_win
+        bcs v_bno
+        ldx f_u
         lda f_t
         and #7
         tay
         lda bitmask,y
         clc
-:       rts
+        rts
+v_bno:  sec
+        rts
 
 ; is f_t free? C=1 yes
 v_isfree:
@@ -1581,8 +1829,10 @@ mk_chk:   lda f_s
         lda f_s+1
         adc #0
         sta f_t+1
-        jsr v_isfree
-        bcc mk_next
+        jsr v_bit               ; beyond the bitmap: no room
+        bcs mk_full
+        and vtbuf,x
+        beq mk_next
         inc f_c
         lda f_c
         cmp #8
@@ -1598,12 +1848,14 @@ mk_take:  lda f_s
         clc
         adc f_c
         sta f_t
-        sta s_sec
         lda f_s+1
         adc #0
         sta f_t+1
+        jsr v_take              ; (may move the window: sets s_sec after)
+        lda f_t
+        sta s_sec
+        lda f_t+1
         sta s_sec+1
-        jsr v_take
         lda f_drv
         sta s_drv
         lda #<tbuf
@@ -1626,79 +1878,12 @@ mk_r2:  rts
 mk_next:  inc f_s
         bne :+
         inc f_s+1
-:       lda f_s+1               ; up to sector 712
-        cmp #>712
-        bcs :+
-        jmp mk_try
-:       lda f_s
-        cmp #<712
-        bcs :+
-        jmp mk_try
-:
+:       jmp mk_try
+mk_full:
         ldy #ST_FULL
         sec
-        rts
 mk_io:  rts
 
-; quick format: fresh DOS 2 VTOC (720 sectors) and an empty directory.
-; Refuses disks that hold a non-DOS 2 VTOC (only blank or DOS 2 ones).
-x_fmt:  jsr v_load
-        bcc @go
-        cpy #ST_FORMAT
-        bne @r
-        lda vtbuf               ; blank disk is fine
-        bne @r2
-@go:    ldx #0
-        txa
-:       sta vtbuf,x
-        sta tbuf,x
-        inx
-        bne :-
-        lda #2
-        sta vtbuf
-        lda #<707
-        sta vtbuf+1
-        sta vtbuf+3
-        lda #>707
-        sta vtbuf+2
-        sta vtbuf+4
-        lda #$FF
-        ldx #10
-:       sta vtbuf,x
-        inx
-        cpx #100
-        bcc :-
-        lda #$0F                ; 0-3 used
-        sta vtbuf+10
-        lda #0                  ; 360-367
-        sta vtbuf+55
-        lda #$7F                ; 368
-        sta vtbuf+56
-        jsr v_save
-        bcs @r
-        lda #<361
-        sta s_sec
-        lda #>361
-        sta s_sec+1
-@w:     lda #<tbuf
-        ldy #>tbuf
-        jsr wr_any
-        bcs @io
-        inc s_sec
-        lda s_sec
-        cmp #<369
-        bne @w
-        lda #0
-        sta dbuf_ok
-        ldy #ST_OK
-        clc
-@r:     rts
-@r2:    ldy #ST_FORMAT
-        sec
-        rts
-@io:    rts
-
-; ---- directory listing (OPEN mode 6) ----------------------------------------
 ; next "  NAME    EXT 012" line (or "NNN FREE SECTORS") into the buffer
 dir_line:
         lda h_drv,x
@@ -1876,6 +2061,11 @@ db_drv: .res 1
 db_sec: .res 2
 v_drv:  .res 1
 v_dirty:.res 1
+v_sec:  .res 1                  ; VTOC sector in the window (low byte)
+v_cnt:  .res 2                  ; free sectors
+v_nvt:  .res 1                  ; VTOC sectors on this disk
+v_big:  .res 1                  ; $04 = MyDOS big disk (16-bit links)
+v_hix:  .res 1                  ; window the last allocation came from
 iomap:  .res 8
 hh:     .res 1
 h_mode: .res NH

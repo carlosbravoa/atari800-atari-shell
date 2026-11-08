@@ -17,6 +17,7 @@ from emu import CIOV, Machine, Stop  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 XEX = os.path.join(HERE, "../build/ash.xex")
 NAME, BUF = 0x0600, 0x6000
+FIO = 0x30                      # the rig's file IOCB (#3: the shell holds K: on #1, uses #2 itself)
 fails = 0
 
 
@@ -57,43 +58,61 @@ class Rig:
         y, a = self.mc.call(CIOV, a=a, x=x)
         return y
 
+    def open(self, name, mode):
+        y = self.cio(FIO, 3, name, mode)
+        if y >= 128:
+            self.cio(FIO, 12)       # like any program must: a failed OPEN leaves the IOCB open
+        return y
+
     def write(self, name, data, mode=8):
-        y = self.cio(0x10, 3, name, mode)
+        y = self.open(name, mode)
         if y >= 128:
             return y
         if data:
-            y = self.cio(0x10, 0x0B, data=data)
+            y = self.cio(FIO, 0x0B, data=data)
             if y >= 128:
-                self.cio(0x10, 12)
+                self.cio(FIO, 12)
                 return y
-        return self.cio(0x10, 12)
+        return self.cio(FIO, 12)
 
     def read(self, name, n=65000):
-        y = self.cio(0x10, 3, name, 4)
+        y = self.open(name, 4)
         if y >= 128:
             return y
         m = self.mc.m
-        self.cio(0x10, 7, n=n)
-        got = int.from_bytes(m[0x348:0x34A], "little") if False else int.from_bytes(m[0x358:0x35A], "little")
-        self.cio(0x10, 12)
+        self.cio(FIO, 7, n=n)
+        got = int.from_bytes(m[0x348 + FIO:0x34A + FIO], "little")
+        self.cio(FIO, 12)
         return bytes(m[BUF:BUF + got])
 
     def listing(self, spec="D1:*.*"):
-        y = self.cio(0x10, 3, spec, 6)
+        y = self.open(spec, 6)
         if y >= 128:
             return y
         lines = []
         while True:
-            y = self.cio(0x10, 5, n=40)
+            y = self.cio(FIO, 5, n=40)
             if y >= 128:
                 break
-            got = int.from_bytes(self.mc.m[0x358:0x35A], "little")
+            got = int.from_bytes(self.mc.m[0x348 + FIO:0x34A + FIO], "little")
             lines.append(bytes(self.mc.m[BUF:BUF + got - 1]).decode("latin1"))
-        self.cio(0x10, 12)
+        self.cio(FIO, 12)
         return lines
 
     def xio(self, cmd, name):
         return self.cio(0x20, cmd, name)
+
+    def note(self, x=FIO):
+        m = self.mc.m
+        y = self.cio(x, 38)
+        if y != 1:
+            return y
+        return m[0x34C + x] | (m[0x34D + x] << 8), m[0x34E + x]
+
+    def point(self, sec, byte, x=FIO):
+        m = self.mc.m
+        m[0x34C + x], m[0x34D + x], m[0x34E + x] = sec & 255, sec >> 8, byte
+        return self.cio(x, 37)
 
     def fsck(self, tag):
         path = self.atr + ".chk"
@@ -145,6 +164,30 @@ def suite(dd):
     check(r.write("D1:F0.DAT", b"x", mode=9) == 1, f"{tag} append to empty")
     check(r.read("D1:F0.DAT") == b"x", f"{tag} append-to-empty readback")
     r.fsck(f"{tag} overwrite/append")
+    # NOTE / POINT
+    data = files["F10.DAT"] = b"short" + b"+more" * 60
+    check(r.cio(FIO, 3, "D1:F10.DAT", 4) == 1, f"{tag} open for note/point")
+    per = 253 if dd else 125
+    ent = r.mc.disks[1].read(362)[2 * 16:3 * 16]          # F10.DAT is entry 10
+    check(r.note() == (int.from_bytes(ent[3:5], "little"), 0), f"{tag} note at start {r.note()}")
+    r.cio(FIO, 7, n=140)
+    pos = r.note()
+    check(pos[1] == 140 % per, f"{tag} note byte {pos}")
+    r.cio(FIO, 7, n=100)
+    check(r.point(*pos) == 1, f"{tag} point back")
+    r.cio(FIO, 7, n=20)
+    got = bytes(r.mc.m[BUF:BUF + 20])
+    check(got == data[140:160], f"{tag} read after point {got!r} != {data[140:160]!r}")
+    check(r.point(pos[0], per + 1) == 166, f"{tag} point beyond the sector")
+    check(r.point(1, 0) == 1 and r.cio(FIO, 7, n=4) in (1, 136), f"{tag} point to a foreign sector reads it")
+    r.cio(FIO, 12)
+    check(r.cio(FIO, 3, "D1:F10.DAT", 8) == 1, f"{tag} open write")
+    r.cio(FIO, 0x0B, data=b"abc")
+    check(r.note()[1] == 3, f"{tag} note while writing {r.note()}")
+    check(r.point(1, 0) == 171, f"{tag} point while writing refused")
+    r.cio(FIO, 12)
+    files["F10.DAT"] = b"abc"
+    r.fsck(f"{tag} note/point")
     # listing
     ls = r.listing()
     check(isinstance(ls, list) and len(ls) == len(files) + 1 and ls[-1].endswith("FREE SECTORS"),
@@ -181,7 +224,7 @@ def suite(dd):
     # errors
     check(r.write("D1:BAD NAME!", b"") == 165 or r.write("D1:B!D", b"") == 165, f"{tag} bad name")
     check(r.read("D1:NOPE.XXX") == 170, f"{tag} not found")
-    check(r.cio(0x10, 3, "D7:X", 4) == 160, f"{tag} bad drive")
+    check(r.open("D7:X", 4) == 160, f"{tag} bad drive")
     # fill the disk
     big = bytes(range(256)) * 200
     y, k = 1, 0
@@ -189,14 +232,119 @@ def suite(dd):
         y = r.write(f"D1:FILL{k}", big)
         k += 1
     check(y == 162, f"{tag} disk full -> {y}")
-    r.cio(0x10, 12)
+    r.cio(FIO, 12)
     p = r.fsck(f"{tag} full")
+    sig = bytes(r.mc.m[0x2006:0x2009])
+    r.mc.m[0x2006] = 0                    # a launched program replaced the shell
+    check(sig == b"ASH" and r.xio(254, "D1:") == 146, f"{tag} XIO 254 without the shell")
+    r.mc.m[0x2006:0x2009] = sig
     # everything survives a reload through the plain reader
     return tmp
 
 
+def big_suite(dd, nsec, reserve_to=0):
+    """A MyDOS big disk; reserve_to marks 4..reserve_to used (an image run the
+    fsck allows) so allocation starts in a high VTOC sector."""
+    tag = f"{'DD' if dd else 'SD'}{nsec}"
+    tmp = tempfile.mkdtemp()
+    atr = os.path.join(tmp, "b.atr")
+    d = mkatr.Disk(dd, nsec)
+    d.used |= set(range(4, reserve_to + 1))
+    img, free0 = d.finish()
+    open(atr, "wb").write(img)
+    r = Rig(atr)
+    check(r.xio(254, "D1:") == 175, f"{tag} format refused")
+    check(r.free() == free0, f"{tag} untouched free {r.free()} != {free0}")
+    rnd = random.Random(nsec)
+    per = 253 if dd else 125
+    files = {}
+    for i, size in enumerate([0, 1, per, per + 1, 3000, 40000]):
+        data = bytes(rnd.randrange(256) for _ in range(size))
+        nm = f"B{i}.DAT"
+        check(r.write(f"D1:{nm}", data) == 1, f"{tag} write {nm}")
+        files[nm] = data
+    r.fsck(f"{tag} writes")
+    for nm, data in files.items():
+        got = r.read(f"D1:{nm}")
+        check(got == data, f"{tag} readback {nm} ({len(data)}): {got if isinstance(got, int) else len(got)}")
+    dsk = r.mc.disks[1]
+    e = dsk.read(361)
+    st = e[3] | (e[4] << 8)
+    check(e[0] == 0x46, f"{tag} entry flags {e[0]:02x} (want 46: 16-bit links)")
+    check(st > reserve_to, f"{tag} first file at {st}, reserved to {reserve_to}")
+    want = free0 - sum(max(1, -(-len(x) // per)) for x in files.values())
+    check(r.free() == want, f"{tag} free after writes {r.free()} != {want}")
+    check(r.write("D1:B5.DAT", b"tail" * 100, mode=9) == 1, f"{tag} append")
+    check(r.read("D1:B5.DAT") == files["B5.DAT"] + b"tail" * 100, f"{tag} append readback")
+    check(r.write("D1:B4.DAT", b"small") == 1 and r.read("D1:B4.DAT") == b"small", f"{tag} overwrite")
+    r.fsck(f"{tag} append/overwrite")
+    check(r.xio(42, "D1:HI") == 1, f"{tag} mkdir")
+    check(r.write("D1:HI/IN.TXT", b"up here") == 1 and r.read("D1:HI/IN.TXT") == b"up here", f"{tag} subdir file")
+    e = dsk.read(361)
+    o = 6 * 16
+    check(e[o] == 0x10 and (e[o + 3] | (e[o + 4] << 8)) > reserve_to, f"{tag} dir entry {e[o]:02x} @{e[o + 3] | (e[o + 4] << 8)}")
+    r.fsck(f"{tag} dirs")
+    check(r.xio(33, "D1:HI/IN.TXT") == 1 and r.xio(33, "D1:HI") == 1, f"{tag} rmdir")
+    f1 = r.free()
+    check(r.xio(33, "D1:B5.DAT") == 1 and r.free() > f1, f"{tag} delete frees ({f1} -> {r.free()})")
+    r.fsck(f"{tag} delete")
+    big = bytes(range(256)) * 100
+    y, k = 1, 0
+    while y == 1 and k < 80:
+        y = r.write(f"D1:FILL{k}", big)
+        k += 1
+    check(y == 162, f"{tag} disk full -> {y} after {k}")
+    r.cio(FIO, 12)
+    check(r.free() == 0, f"{tag} full disk free {r.free()}")
+    r.fsck(f"{tag} full")
+    check(r.xio(33, "D1:FILL*") == 1, f"{tag} delete fill")
+    r.fsck(f"{tag} after delete")
+
+
+def ed_suite():
+    """A DOS 2.5 enhanced-density disk (size code 2, 1010 sectors, VTOC2 in
+    1024) must stay read-only."""
+    tmp = tempfile.mkdtemp()
+    atr = os.path.join(tmp, "ed.atr")
+    img, _ = mkatr.Disk(False).finish()
+    img = bytearray(img) + bytes(128 * 320)
+    o = 16 + 384 + (360 - 4) * 128
+    img[o + 1:o + 3] = (1010).to_bytes(2, "little")
+    img[2:4] = (len(img[16:]) // 16).to_bytes(2, "little")
+    open(atr, "wb").write(img)
+    r = Rig(atr)
+    check(r.write("D1:X.DAT", b"no") == 175, "ED write refused")
+    check(r.xio(42, "D1:SUB") == 175, "ED mkdir refused")
+
+
+def shell_suite():
+    """The shell after a refused disk write: CIO leaves a failed OPEN's IOCB
+    marked open, so the shell must close it or the next write gets 129."""
+    tmp = tempfile.mkdtemp()
+    atr = os.path.join(tmp, "d1.atr")
+    blank_atr(atr)
+    open(os.path.join(tmp, "x.txt"), "w").write("hello\n")
+    cmds = "cp h:x.txt d3:\x9bcp h:x.txt d1:\x9bcp h:x.txt d1:y.txt\x9bls d1:\x9b"
+    mc = Machine({1: atr}, tmp, cmds.encode("latin1"))
+    for s, d in Machine.load_xex(XEX):
+        if s != 0x02E0:
+            mc.m[s:s + len(d)] = d
+    try:
+        mc.run(0x2000)
+    except Stop:
+        pass
+    scr = mc.screen()
+    check("error 129" not in scr and "x.txt" in scr and "y.txt" in scr,
+          f"shell write after a refused write:\n{scr}")
+
+
 if __name__ == "__main__":
+    shell_suite()
     for dd in (False, True):
         suite(dd)
+    big_suite(True, 1440)                 # 360K: 2 VTOC sectors, fill crosses into 359
+    big_suite(False, 1040)                # MyDOS ED: 3 VTOC sectors (SD pairs)
+    big_suite(True, 65535, reserve_to=65000)   # 16 MB: allocation in the last window
+    ed_suite()
     print("all FMS tests passed" if not fails else f"{fails} failure(s)")
     sys.exit(1 if fails else 0)

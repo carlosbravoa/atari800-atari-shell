@@ -67,11 +67,15 @@ their line-ending style: a Unix file stays Unix, new files use ATASCII.
 
 ASH installs a read/write `D:` handler (`$0700-$1CFF`, the same area as DOS
 2.5) that stays resident for BASIC and for launched programs: `OPEN`,
-`LOAD`/`SAVE`, `LIST "D:X.LST"`, `ENTER`, XIO rename/delete/lock/unlock,
-`XIO 42` mkdir and `XIO 254` quick-format all work, with wildcards and
-`DIR>` / `DIR/` paths. Disks must be 720-sector DOS 2 format (SD or DD);
-other layouts (big MyDOS, SpartaDOS) are readable but not writable. RESET
-keeps `D:` alive.
+`LOAD`/`SAVE`, `LIST "D:X.LST"`, `ENTER`, `NOTE`/`POINT` (on a file open
+for reading), XIO rename/delete/lock/unlock and `XIO 42` mkdir all work,
+with wildcards and `DIR>` / `DIR/` paths; `XIO 254` formats (it runs the
+shell's `format`, so it works from BASIC, not from a launched program). Disks are DOS 2 / MyDOS format: 720-sector SD or
+DD, and MyDOS big disks up to 65535 sectors (16 MB hard-disk images: the
+VTOC continues below sector 360 and files use 16-bit links, as MyDOS
+writes them). DOS 2.5 enhanced density and SpartaDOS disks are readable
+but not writable; `format` makes 720-sector DOS 2 disks only. Two `D:`
+files can be open at once. RESET keeps `D:` alive.
 
 Note: `.BAS` files written by BASIC's `SAVE` are tokenized, not text —
 `cat` shows binary; use `LIST "D:NAME.LST"` for a text listing.
@@ -160,7 +164,7 @@ Disk access is plain SIO through the OS, so any Atari drive or SIO2SD /
 SDrive / FujiNet works, at standard speed. `h:` is the Tang Nano board's
 SD-folder device; ASH probes it at boot and hides it when it isn't there.
 Tested on the board's XL/XE (64 KB); a 400/800 should work but is untested.
-Writable disks are 720-sector SD or DD; ED and big MyDOS disks are read-only.
+Writable disks: 720-sector SD or DD and MyDOS big disks; DOS 2.5 ED is read-only.
 
 ## How it works
 
@@ -178,6 +182,7 @@ Writable disks are 720-sector SD or DD; ED and big MyDOS disks are read-only.
 make                                   # build/ash.xex, build/boot.bin
 python3 tools/mkatr.py -o ASH.ATR --shell build/ash.xex --boot build/boot.bin \
         game1.xex "Long Name.xex=GAME2.XEX" readme.txt      # [--dd] for 180K
+python3 tools/mkatr.py --dd --sectors 65535 -o HD16.ATR     # a MyDOS 16 MB disk
 ```
 Boot `ASH.ATR` on D1: (OSD → D1: → Attach → Boot to OS), or load
 `build/ash.xex` as an executable. `mkatr.py --list X.ATR` lists any DOS 2/MyDOS ATR.
@@ -187,6 +192,6 @@ warm-start it), `tools/sh.py` (type commands, dump the screen),
 `tools/emu.py` (py65 rig: CIO dispatched through HATABS so the real D:
 handler runs, writable ATRs + H: folder served, `--esc` key scripts — runs
 the boot path, listings, file ops, the editor and launches deterministically),
-`tools/test_fms.py` (the D: handler through CIO, SD + DD, fsck after every
+`tools/test_fms.py` (the D: handler through CIO, SD + DD + MyDOS big disks, fsck after every
 step), `mkatr.py --fsck DISK.ATR` (DOS 2 structure checker),
 `tools/hwrun.sh` (launch `h:NAME` on hardware, liveness check).

@@ -113,7 +113,7 @@ argbuf: .res 128
 pathbuf:.res 80
 namebuf:.res 64                 ; H: name frame
 argv:   .res MAXARGS
-comp:   .res 28                 ; current path component (lowercase; sd: names up to 27)
+comp:   .res 28                 ; current d:/h: path component (lowercase); sd: builds in sdpath
 nbuf:   .res 16                 ; formatted name "name.ext"
 cbuf:   .res 28                 ; tab-completion candidate / cp destination name
 hbuf:   .res 8
@@ -135,6 +135,7 @@ sdstart: .res 2
 sddst:  .res 64                 ; TN: cp/mv destination on the card
 sdrw:   .res 1                  ; TN: the session write gate, as we last set it
 sdappend: .res 1
+sdsrc:  .res 1                  ; TN: the cp source is on the card (sdpath = its path)
 tbase:  .res 6                  ; TN: date — yy mm dd hh mm ss at the last fold
 tjif:   .res 3                  ; RTCLOK at that moment (hi, mid, lo)
 tsynced: .res 1

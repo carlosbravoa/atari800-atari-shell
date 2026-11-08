@@ -125,35 +125,40 @@ sd_abs: ldy #0
         jmp @done
 @c1:    lda #1
         sta r_kind
-        ldx #0                  ; comp = component (≤ 27 chars)
+        ldx sx                  ; sdpath = dir + "/" + component, built in place:
+        lda #'/'                ; any name that fits the frame (no 27-char cap)
+        sta sdpath,x
+        inx
 @cc:    lda (ap),y
         beq @ce
         cmp #'/'
         beq @ce
-        cpx #27
-        bcs :+
-        sta comp,x
+        cpx #SDPLEN
+        bcs @long
+        sta sdpath,x
         inx
-:       iny
+        iny
         bne @cc
 @ce:    sty ypos
         lda #0
-        sta comp,x
-        lda comp
+        sta sdpath,x
+        ldy sx                  ; "." and "..": still a directory, nothing added
+        lda sdpath+1,y
         cmp #'.'
         bne @add
-        lda comp+1
+        lda sdpath+2,y
         beq @isdir              ; "."
         cmp #'.'
         bne @add
-        lda comp+2
+        lda sdpath+3,y
         bne @add
-@isdir: lda #0                  ; "." and "..": still a directory
+@isdir: lda #0
         sta r_kind
-        ldx sx                  ; "..": drop the last component
-@up:    lda comp+1
-        beq @comp               ; (".": nothing to drop)
-        cpx #0
+        ldx sx                  ; drop what was just appended
+        sta sdpath,x
+        lda sdpath+2,y
+        beq @comp               ; ".": nothing more to drop
+@up:    cpx #0                  ; "..": drop the last component as well
         beq @comp
         dex
         lda sdpath,x
@@ -163,22 +168,7 @@ sd_abs: ldy #0
         lda #0
         sta sdpath,x
         jmp @comp
-@add:   ldx sx
-        lda #'/'
-        sta sdpath,x
-        inx
-        ldy #0
-:       lda comp,y
-        beq :+
-        cpx #SDPLEN
-        bcs @long
-        sta sdpath,x
-        inx
-        iny
-        bne :-
-:       stx sx
-        lda #0
-        sta sdpath,x
+@add:   stx sx
         jmp @comp
 @done:  ldx sx                  ; "" means the root: show it as "/"
         bne :+
@@ -228,6 +218,8 @@ sd_open:
         lda #0
         sta k_dev
         jsr st_reset
+        lda #1
+        sta sdsrc
         jmp sd_lastname
 @no:    lda #E_NOENT
         sta err
@@ -655,6 +647,7 @@ cmd_sd: lda argc
 sd_dest:
         lda #0
         sta sdappend
+        sta sdsrc
         lda r_kind
         beq @dir
         jsr sd_frame            ; an existing directory? (LIST succeeds)
@@ -678,10 +671,12 @@ sd_dest:
 ; after the source is open: finish sddst and open it for writing (handle 0)
 sd_wopen:
         jsr sd_need_rw
-        bcs @r
-        lda sdappend
-        beq @open
-        ldx #0
+        bcc :+
+        rts
+:       lda sdappend
+        bne :+
+        jmp @open
+:       ldx #0
 :       lda sddst,x
         beq :+
         inx
@@ -692,16 +687,36 @@ sd_wopen:
 :       lda #'/'
         sta sddst,x
         inx
+        lda sdsrc               ; a source on the card: its full name from sdpath
+        bne @full               ; (nbuf holds at most 15 chars of it)
         ldy #0
 :       lda nbuf,y
-        beq :+
+        beq @end
         cpx #SDPLEN
         bcs @long
         sta sddst,x
         inx
         iny
         bne :-
-:       lda #0
+@full:  ldy #0                  ; sx = start of sdpath's last component
+        sty sx
+@fs:    lda sdpath,y
+        beq @fc
+        iny
+        cmp #'/'
+        bne @fs
+        sty sx                  ; (sty leaves cmp's Z set: jmp, not bne)
+        jmp @fs
+@fc:    ldy sx
+@fl:    lda sdpath,y
+        beq @end
+        cpx #SDPLEN
+        bcs @long
+        sta sddst,x
+        inx
+        iny
+        bne @fl
+@end:   lda #0
         sta sddst,x
 @open:  jsr h_name0
         ldx #0

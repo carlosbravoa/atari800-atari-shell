@@ -95,6 +95,18 @@ class Rig:
     def xio(self, cmd, name):
         return self.cio(0x20, cmd, name)
 
+    def note(self, x=0x10):
+        m = self.mc.m
+        y = self.cio(x, 38)
+        if y != 1:
+            return y
+        return m[0x34C + x] | (m[0x34D + x] << 8), m[0x34E + x]
+
+    def point(self, sec, byte, x=0x10):
+        m = self.mc.m
+        m[0x34C + x], m[0x34D + x], m[0x34E + x] = sec & 255, sec >> 8, byte
+        return self.cio(x, 37)
+
     def fsck(self, tag):
         path = self.atr + ".chk"
         self.mc.disks[1].save(path)
@@ -120,11 +132,11 @@ def suite(dd):
     tag = "DD" if dd else "SD"
     tmp = tempfile.mkdtemp()
     atr = os.path.join(tmp, "t.atr")
-    blank_atr(atr, dd, fmt=False)
+    blank_atr(atr, dd)
     r = Rig(atr)
-    check(r.xio(254, "D1:") == 1, f"{tag} format blank")
-    r.fsck(f"{tag} format")
-    check(r.free() == 707, f"{tag} free after format {r.free()}")
+    check(r.xio(254, "D1:") == 146, f"{tag} XIO 254 (format is the shell's)")
+    r.fsck(f"{tag} fresh")
+    check(r.free() == 707, f"{tag} free when fresh {r.free()}")
     rnd = random.Random(7)
     files = {}
     for i, size in enumerate([0, 1, 124, 125, 126, 253, 254, 255, 1000, 5000, 20000]):
@@ -145,6 +157,30 @@ def suite(dd):
     check(r.write("D1:F0.DAT", b"x", mode=9) == 1, f"{tag} append to empty")
     check(r.read("D1:F0.DAT") == b"x", f"{tag} append-to-empty readback")
     r.fsck(f"{tag} overwrite/append")
+    # NOTE / POINT
+    data = files["F10.DAT"] = b"short" + b"+more" * 60
+    check(r.cio(0x10, 3, "D1:F10.DAT", 4) == 1, f"{tag} open for note/point")
+    per = 253 if dd else 125
+    ent = r.mc.disks[1].read(362)[2 * 16:3 * 16]          # F10.DAT is entry 10
+    check(r.note() == (int.from_bytes(ent[3:5], "little"), 0), f"{tag} note at start {r.note()}")
+    r.cio(0x10, 7, n=140)
+    pos = r.note()
+    check(pos[1] == 140 % per, f"{tag} note byte {pos}")
+    r.cio(0x10, 7, n=100)
+    check(r.point(*pos) == 1, f"{tag} point back")
+    r.cio(0x10, 7, n=20)
+    got = bytes(r.mc.m[BUF:BUF + 20])
+    check(got == data[140:160], f"{tag} read after point {got!r} != {data[140:160]!r}")
+    check(r.point(pos[0], per + 1) == 166, f"{tag} point beyond the sector")
+    check(r.point(1, 0) == 1 and r.cio(0x10, 7, n=4) in (1, 136), f"{tag} point to a foreign sector reads it")
+    r.cio(0x10, 12)
+    check(r.cio(0x10, 3, "D1:F10.DAT", 8) == 1, f"{tag} open write")
+    r.cio(0x10, 0x0B, data=b"abc")
+    check(r.note()[1] == 3, f"{tag} note while writing {r.note()}")
+    check(r.point(1, 0) == 171, f"{tag} point while writing refused")
+    r.cio(0x10, 12)
+    files["F10.DAT"] = b"abc"
+    r.fsck(f"{tag} note/point")
     # listing
     ls = r.listing()
     check(isinstance(ls, list) and len(ls) == len(files) + 1 and ls[-1].endswith("FREE SECTORS"),
@@ -206,7 +242,7 @@ def big_suite(dd, nsec, reserve_to=0):
     img, free0 = d.finish()
     open(atr, "wb").write(img)
     r = Rig(atr)
-    check(r.xio(254, "D1:") == 175, f"{tag} format refused")
+    check(r.xio(254, "D1:") == 146, f"{tag} XIO 254 not implemented")
     check(r.free() == free0, f"{tag} untouched free {r.free()} != {free0}")
     rnd = random.Random(nsec)
     per = 253 if dd else 125

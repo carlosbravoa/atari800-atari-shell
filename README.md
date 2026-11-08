@@ -67,9 +67,10 @@ their line-ending style: a Unix file stays Unix, new files use ATASCII.
 
 ASH installs a read/write `D:` handler (`$0700-$1CFF`, the same area as DOS
 2.5) that stays resident for BASIC and for launched programs: `OPEN`,
-`LOAD`/`SAVE`, `LIST "D:X.LST"`, `ENTER`, XIO rename/delete/lock/unlock,
-`XIO 42` mkdir and `XIO 254` quick-format all work, with wildcards and
-`DIR>` / `DIR/` paths. Disks are DOS 2 / MyDOS format: 720-sector SD or
+`LOAD`/`SAVE`, `LIST "D:X.LST"`, `ENTER`, `NOTE`/`POINT` (on a file open
+for reading), XIO rename/delete/lock/unlock and `XIO 42` mkdir all work,
+with wildcards and `DIR>` / `DIR/` paths; formatting is the shell's
+`format` command (no `XIO 254`). Disks are DOS 2 / MyDOS format: 720-sector SD or
 DD, and MyDOS big disks up to 65535 sectors (16 MB hard-disk images: the
 VTOC continues below sector 360 and files use 16-bit links, as MyDOS
 writes them). DOS 2.5 enhanced density and SpartaDOS disks are readable

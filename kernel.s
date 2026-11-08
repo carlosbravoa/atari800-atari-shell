@@ -26,6 +26,9 @@ ICCOMZ  = $22
 ICBALZ  = $24
 ICAX1Z  = $2A
 ICIDNO  = $2E                   ; IOCB number * 16
+ICAX3   = $034C                 ; + ICIDNO: NOTE / POINT sector and byte
+ICAX4   = $034D
+ICAX5   = $034E
 HATABS  = $031A
 NH      = 2                     ; D: files open at once
 
@@ -39,9 +42,11 @@ ST_DRIVE = 160
 ST_MANY = 161
 ST_FULL = 162
 ST_NAME = 165
+ST_PLEN = 166                   ; POINT: byte beyond the sector's data
 ST_LOCKED = 167
 ST_DIRFULL = 169
 ST_NOTFOUND = 170
+ST_POINT = 171                  ; POINT on a file not open for reading
 ST_FORMAT = 175                 ; not a DOS 2 disk: read-only
 
 ; ---- SIO -------------------------------------------------------------------
@@ -582,14 +587,8 @@ o_app:  jsr v_load
         sta h_sh,x
         jsr h_rd
         bcs d_ret2
-        ldy f_tr
-        lda h_l16,x
-        bne @l16
-        lda (fz_b),y            ; link hi: DOS 2 keeps the file number above
-        and #$03
-        bpl @hi
-@l16:   lda (fz_b),y
-@hi:    sta f_s+1
+        jsr h_link
+        sta f_s+1
         iny
         lda (fz_b),y
         sta f_s
@@ -706,36 +705,8 @@ d_get:  jsr h_find
 @rd:    lda h_pos,x
         cmp h_cnt,x
         bcc @have
-        lda h_nl,x
-        ora h_nh,x
-        bne :+
-        ldy #ST_EOF
-        rts
-:       lda h_nl,x
-        sta h_sl,x
-        lda h_nh,x
-        sta h_sh,x
-        jsr h_rd
+        jsr h_next
         bcs @r
-        ldx hh
-        ldy f_tr
-        lda (fz_b),y
-        pha
-        lda h_l16,x             ; 16-bit links keep all 8 bits
-        bne :+
-        pla
-        and #$03                ; DOS 2: file number<<2 | next hi
-        pha
-:       pla
-        sta h_nh,x
-        iny
-        lda (fz_b),y
-        sta h_nl,x
-        iny
-        lda (fz_b),y
-        sta h_cnt,x
-        lda #0
-        sta h_pos,x
         jmp @rd
 @have:  tay
         inc h_pos,x
@@ -758,8 +729,104 @@ d_get:  jsr h_find
 d_stat: ldy #ST_OK
         rts
 
-; XIO: 32 rename, 33 delete, 35 lock, 36 unlock, 42 mkdir, 254 format
-d_spec: jsr op_begin
+; the handle's next sector -> its buffer, link and count taken, position 0.
+; C=1 + Y on error (ST_EOF when there is none).
+h_next: ldx hh
+        lda h_nl,x
+        ora h_nh,x
+        bne :+
+        ldy #ST_EOF
+        sec
+        rts
+:       lda h_nl,x
+        sta h_sl,x
+        lda h_nh,x
+        sta h_sh,x
+        jsr h_rd
+        bcs @r
+        jsr h_link
+        sta h_nh,x
+        iny
+        lda (fz_b),y
+        sta h_nl,x
+        iny
+        lda (fz_b),y
+        sta h_cnt,x
+        lda #0
+        sta h_pos,x
+        clc
+@r:     rts
+
+; link high byte of the sector in handle hh's buffer -> A (X = hh, Y = f_tr)
+h_link: ldx hh
+        ldy f_tr
+        lda (fz_b),y
+        ldy h_l16,x             ; 16-bit links keep all 8 bits
+        bne :+
+        and #$03                ; DOS 2: file number<<2 | next hi
+:       ldy f_tr
+        rts
+
+; XIO 38 NOTE: sector and byte of the next byte -> ICAX3-5 of the IOCB
+x_note: jsr h_find
+        bcs xn_r
+        lda h_mode,x
+        cmp #4
+        bne @cur
+        lda h_cnt,x             ; reading, nothing read yet: the first sector
+        bne @cur
+        lda h_nl,x
+        sta h_sl,x
+        lda h_nh,x
+        sta h_sh,x
+@cur:   lda h_pos,x
+        pha
+        lda h_sh,x
+        pha
+        lda h_sl,x
+        ldx ICIDNO
+        sta ICAX3,x
+        pla
+        sta ICAX4,x
+        pla
+        sta ICAX5,x
+        ldy #ST_OK
+xn_r:   rts
+
+; XIO 37 POINT: ICAX3-5 of the IOCB -> position (a file open for reading)
+x_point:
+        jsr h_find
+        bcs xn_r
+        lda h_mode,x
+        cmp #4
+        beq :+
+        ldy #ST_POINT
+        rts
+:       ldy ICIDNO
+        lda ICAX3,y
+        sta h_nl,x
+        lda ICAX4,y
+        sta h_nh,x
+        jsr h_next
+        bcs xn_r
+        ldy ICIDNO
+        lda ICAX5,y
+        cmp h_cnt,x
+        beq :+
+        bcs @bad
+:       sta h_pos,x
+        ldy #ST_OK
+        rts
+@bad:   ldy #ST_PLEN
+        rts
+
+; XIO: 32 rename, 33 delete, 35 lock, 36 unlock, 37 point, 38 note, 42 mkdir
+d_spec: lda ICCOMZ
+        cmp #37
+        beq x_point
+        cmp #38
+        beq x_note
+        jsr op_begin
         bcs @r
         lda ICCOMZ
         cmp #33
@@ -775,9 +842,6 @@ d_spec: jsr op_begin
         cmp #42
         bne :+
         jmp x_mkdir
-:       cmp #254
-        bne :+
-        jmp x_fmt
 :       ldy #ST_NOTIMP
 @r:     rts
 
@@ -1382,19 +1446,29 @@ v_alloc:
         iny
         bne :-
 :       sty f_t                 ; bit within the byte
+        stx f_u                 ; the byte
+        ldx #0                  ; window 0: sectors from 0, bytes from 10
+        stx f_c
         lda v_hix
         beq @w0
-        sec                     ; window k: 944 + (k-1)*(sector size*8) + X*8 + bit
-        sbc #1
+        sec                     ; window k: from 944 + (k-1)*(sector size*8),
+        sbc #1                  ; bytes from 0
         asl
         asl                     ; *4: SD windows hold 1024 sectors
-        sta f_t+1
-        ldy f_drv
-        lda ss_tab,y
+        ldx f_drv
+        ldy ss_tab,x
         bne :+
-        asl f_t+1               ; DD: 2048
-:
-        txa
+        asl                     ; DD: 2048
+:       adc #>944               ; (C=0)
+        tax
+        lda #<944
+        sta f_c
+        lda f_u
+        bcc @mul
+@w0:    lda f_u
+        sec
+        sbc #10
+@mul:   stx f_t+1               ; sector = base (X:f_c) + offset*8 + bit
         ldx #0
         stx f_u
         asl
@@ -1402,29 +1476,14 @@ v_alloc:
         asl
         rol f_u
         asl
-        rol f_u                 ; f_u:A = X*8
+        rol f_u
         ora f_t
         clc
-        adc #<944
+        adc f_c
         sta f_t
         lda f_u
         adc f_t+1
-        adc #>944
         sta f_t+1
-        jmp v_take
-@w0:    txa                     ; window 0: (X-10)*8 + bit
-        sec
-        sbc #10
-        ldx #0
-        stx f_t+1
-        asl
-        rol f_t+1
-        asl
-        rol f_t+1
-        asl
-        rol f_t+1
-        ora f_t
-        sta f_t
 v_take: jsr v_bit               ; clear bit f_t; free count - 1
         bcs @r
         inc v_dirty
@@ -1810,77 +1869,6 @@ mk_full:
         sec
 mk_io:  rts
 
-; quick format: fresh DOS 2 VTOC (720 sectors) and an empty directory.
-; Refuses disks that hold a non-DOS 2 VTOC (only blank or DOS 2 ones).
-x_fmt:  jsr v_load
-        bcs :+
-        lda v_big               ; never over a MyDOS big disk
-        beq @go
-@r2j:   jmp @r2
-:       cpy #ST_FORMAT
-        beq :+
-        rts
-:       lda vtbuf               ; blank disk is fine
-        bne @r2j
-@go:    lda f_drv
-        sta v_drv
-        lda #<707
-        sta v_cnt
-        lda #>707
-        sta v_cnt+1
-        ldx #0
-        txa
-:       sta vtbuf,x
-        sta tbuf,x
-        inx
-        bne :-
-        lda #2
-        sta vtbuf
-        lda #<707
-        sta vtbuf+1
-        sta vtbuf+3
-        lda #>707
-        sta vtbuf+2
-        sta vtbuf+4
-        lda #$FF
-        ldx #10
-:       sta vtbuf,x
-        inx
-        cpx #100
-        bcc :-
-        lda #$0F                ; 0-3 used
-        sta vtbuf+10
-        lda #0                  ; 360-367
-        sta vtbuf+55
-        lda #$7F                ; 368
-        sta vtbuf+56
-        jsr v_save
-        bcs @r
-        lda #$FF                ; reload the (now DOS 2) layout next time
-        sta v_drv
-        lda #<361
-        sta s_sec
-        lda #>361
-        sta s_sec+1
-@w:     lda #<tbuf
-        ldy #>tbuf
-        jsr wr_any
-        bcs @io
-        inc s_sec
-        lda s_sec
-        cmp #<369
-        bne @w
-        lda #0
-        sta dbuf_ok
-        ldy #ST_OK
-        clc
-@r:     rts
-@r2:    ldy #ST_FORMAT
-        sec
-        rts
-@io:    rts
-
-; ---- directory listing (OPEN mode 6) ----------------------------------------
 ; next "  NAME    EXT 012" line (or "NNN FREE SECTORS") into the buffer
 dir_line:
         lda h_drv,x

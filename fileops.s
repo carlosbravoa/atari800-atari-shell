@@ -250,12 +250,66 @@ cmd_format:
         beq :+
         rts
 :
+        ldx t_drive             ; only a blank disk or a 720-sector DOS 2 one
+        lda #<360
+        ldy #>360
+        jsr rdsec
+        bcc :+
+        jmp @io
+:       lda dbuf
+        beq @ok
+        cmp #2
+        bne @roj
+        lda dbuf+2
+        cmp #3
+        bcc @ok
+@roj:   jmp @ro
+@ok:    ldx #0                  ; VTOC: 707 free, 0-3 and 360-368 used
+        txa
+:       sta sbuf,x
+        inx
+        bne :-
+        lda #2
+        sta sbuf
+        lda #<707
+        sta sbuf+1
+        sta sbuf+3
+        lda #>707
+        sta sbuf+2
+        sta sbuf+4
+        lda #$FF
+        ldx #10
+:       sta sbuf,x
+        inx
+        cpx #100
+        bcc :-
+        lda #$0F
+        sta sbuf+10
         lda #0
-        sta comp
-        jsr mkfn
-        lda #254
-        jsr c_xio
-        bmi @cerr
+        sta sbuf+55
+        lda #$7F
+        sta sbuf+56
+        lda t_drive
+        sta s_drv
+        lda #<360
+        sta s_sec
+        lda #>360
+        sta s_sec+1
+        jsr @wr
+        bcs @io
+        ldx #0                  ; an empty directory: 361-368
+        txa
+:       sta sbuf,x
+        inx
+        bne :-
+@dir:   inc s_sec
+        jsr @wr
+        bcs @io
+        lda s_sec
+        cmp #<369
+        bne @dir
+        lda #$FF                ; the D: handler reloads this disk's VTOC
+        sta v_drv
         ldx #127                ; boot sector: a stub that just returns, so
         lda #0                  ; the disk boots to BASIC like a blank DOS disk
 :       sta sbuf,x
@@ -276,10 +330,12 @@ cmd_format:
         ldy #>sbuf
         jsr wr_any
         bcc @r
-        lda #E_IO
+@io:    lda #E_IO
         sta err
         jmp perr
-@cerr:  jmp perr_cio
+@wr:    lda #<sbuf
+        ldy #>sbuf
+        jmp wr_any
 @ro:    lda #E_ROFS
         sta err
 @e:     jmp perr
